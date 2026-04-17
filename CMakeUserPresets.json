@@ -1,0 +1,25 @@
+{
+  "version": 6,
+  "configurePresets": [
+    {
+      "name": "llvm-kokkos-debug",
+      "displayName": "LLVM + Kokkos Debug",
+      "generator": "Ninja",
+      "binaryDir": "${sourceDir}/cmake-build-llvm",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Debug",
+        "CMAKE_C_COMPILER": "/opt/homebrew/opt/llvm/bin/clang",
+        "CMAKE_CXX_COMPILER": "/opt/homebrew/opt/llvm/bin/clang++",
+        "Kokkos_ROOT": "/opt/homebrew/opt/kokkos",
+        "OpenMP_ROOT": "/opt/homebrew/opt/libomp"
+      }
+    }
+  ],
+  "buildPresets": [
+    {
+      "name": "llvm-kokkos-debug-build",
+      "displayName": "Build LLVM + Kokkos Debug",
+      "configurePreset": "llvm-kokkos-debug"
+    }
+  ]
+}

@@ -1,0 +1,23 @@
+# macOS metadata
+.DS_Store
+.AppleDouble
+.LSOverride
+._*
+
+# CMake build directories
+cmake-build-*/
+build/
+out/
+
+# Generated benchmark outputs and external build copies
+benchmark_runs/
+
+# Python cache files
+__pycache__/
+*.py[cod]
+
+# IDE metadata
+.idea/
+
+# Local reference/example repository not intended for upload
+lixiaocanexample/

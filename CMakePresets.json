@@ -1,0 +1,53 @@
+{
+  "version": 6,
+  "configurePresets": [
+    {
+      "name": "linux-kokkos-cpu-debug",
+      "displayName": "Linux Kokkos CPU Debug",
+      "generator": "Unix Makefiles",
+      "binaryDir": "${sourceDir}/cmake-build-cpu-debug",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Debug",
+        "Kokkos_DIR": "/usr/local/kokkos_cpu/lib/cmake/Kokkos"
+      }
+    },
+    {
+      "name": "linux-kokkos-cpu-release",
+      "displayName": "Linux Kokkos CPU Release",
+      "generator": "Unix Makefiles",
+      "binaryDir": "${sourceDir}/cmake-build-cpu-release",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Release",
+        "Kokkos_DIR": "/usr/local/kokkos_cpu/lib/cmake/Kokkos"
+      }
+    },
+    {
+      "name": "linux-kokkos-cuda-release",
+      "displayName": "Linux Kokkos CUDA Release",
+      "generator": "Unix Makefiles",
+      "binaryDir": "${sourceDir}/cmake-build-cuda",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Release",
+        "CMAKE_CXX_COMPILER": "/usr/local/kokkos/bin/nvcc_wrapper",
+        "Kokkos_DIR": "/usr/local/kokkos/lib/cmake/Kokkos"
+      }
+    }
+  ],
+  "buildPresets": [
+    {
+      "name": "linux-kokkos-cpu-debug-build",
+      "displayName": "Build Linux Kokkos CPU Debug",
+      "configurePreset": "linux-kokkos-cpu-debug"
+    },
+    {
+      "name": "linux-kokkos-cpu-release-build",
+      "displayName": "Build Linux Kokkos CPU Release",
+      "configurePreset": "linux-kokkos-cpu-release"
+    },
+    {
+      "name": "linux-kokkos-cuda-release-build",
+      "displayName": "Build Linux Kokkos CUDA Release",
+      "configurePreset": "linux-kokkos-cuda-release"
+    }
+  ]
+}

@@ -6,14 +6,20 @@ the shape, semantics, or responsibility boundaries of the project.
 
 ## Repository Status
 
-The repository is currently in an early scaffold stage. Core scaffolding now parses and
-builds cleanly under the configured Kokkos toolchain. Parker and focused transport
-headers now contain active solver/coefficient scaffolding, while `QLTModel.hpp` remains
-a placeholder. This document reflects the code as it exists now, not the intended final
-design.
+The repository now contains an active Kokkos reconnection calibration driver for Parker
+and focused transport, compact Athena++/Fortran field converters, benchmark wrappers,
+particle snapshot diagnostics, and a Python microwave emission-synthesis prototype.
+Several generic solver headers still retain scaffold-level interfaces, and
+`QLTModel.hpp` remains a placeholder. This document reflects the code as it exists now,
+not the intended final design.
 
 ## High-Level Module View
 
+- `readme.md`: Chinese user-facing project README covering build/run workflow,
+  background-field conversion, walltime controls, benchmark wrappers, and emission movie
+  synthesis.
+- `README.en.md`: English companion README that mirrors the Chinese workflow overview for
+  collaborators who do not read Chinese.
 - `CMakeLists.txt`: project build entry point; locates an installed Kokkos package,
   exports compile commands, and defines both the interface target and calibration
   executable plus local reconnection run targets.
@@ -27,7 +33,8 @@ design.
   the repository Athena field reader, interpolation utilities, Kokkos device aliases, and
   random pool wrapper, with runtime Parker and focused-transport branches.
 - `apps/athena2bin.py`: Python converter from 2D Athena++ `.athdf` snapshots to the
-  compact background-field binary format consumed by `AthenaFieldReader.hpp`.
+  compact background-field binary format consumed by `AthenaFieldReader.hpp`, with an
+  optional emission-background HDF5 output for density/temperature maps.
 - `apps/field_binary_to_xdmf_hdf5.py`: Python converter from the repository
   field binary snapshot format to HDF5 plus XDMF.
 - `apps/fortran_mhd_to_compact_field.cpp`: C++ converter from Li Xiaocan Fortran
@@ -51,6 +58,8 @@ design.
   prototype modules.
 - `particleEmission/compact_field_io.py`: compact 2D field reader and coarse-grid
   averaging helpers for the current sample reconnection field format.
+- `particleEmission/background_io.py`: emission background-map reader for Athena/MHD
+  converted HDF5 files containing thermal-density and temperature maps.
 - `particleEmission/particle_io.py`: minimal particle snapshot reader and weighted
   coarse-grid deposition utilities for active-particle morphology maps.
 - `particleEmission/microwave_backend.py`: local ctypes wrapper around a rebuilt
@@ -84,19 +93,31 @@ design.
   `case2_analytic_loop_top` with morphology panels, spectrum comparisons, HDF5
   products, component-aware reference/diagnostic groups, and summary metadata including
   parameter, image, and banded-spectrum validation metrics.
+- `kokkos_cpu_format_example_frame180_262k/`: tracked Parker CPU example containing two
+  compact field frames, one version-4 particle snapshot, summary/log outputs, and a
+  manifest for default emission-synthesis smoke runs.
+- `pygsfit_cp-main/`: bundled external gyrosynchrotron fitting/synthesis package whose
+  Fortran sources and prebuilt platform libraries are used as reference material and as
+  the local microwave backend source tree.
 - `particleEmission/emission_hdf5.py`: Python utilities for emission HDF5 product
   writing/reading, Rayleigh-Jeans specific-intensity and brightness-temperature
   conversion, frequency slicing, ROI integration, and Gaussian beam convolution.
 - `particleEmission/simple_emission_runner.py`: first runnable end-to-end prototype
   that reads the example field and particle files, deposits particles to a coarse
-  image grid, calibrates a macro-particle-to-electron conversion factor, synthesizes
-  per-pixel microwave spectra plus component-aware reference/diagnostic cubes, writes an
-  HDF5 product, and saves a quicklook figure.
+  image grid, optionally reads an MHD/Athena-derived background map, calibrates a
+  macro-particle-to-electron conversion factor, synthesizes per-pixel microwave spectra
+  plus component-aware reference/diagnostic cubes, writes an HDF5 product, and saves a
+  quicklook figure.
+- `particleEmission/parker_emission_movie.py`: Parker movie renderer that combines
+  compact fields, version-4 particle snapshots, optional Athena/MHD background maps,
+  Bz/Jz diagnostics, energy-split particle maps, beam-convolved 1/3/5 GHz images, and
+  full-domain spectra into a PNG sequence and optional ProRes MOV.
 - `particleEmission/example_coronal_config.json`: example active-region coronal
   parameter set for the simple emission prototype CLI.
 - `particleEmission/requirements.txt`: Python dependency list currently used to
   manage the local particle-emission virtual environment for HDF5 I/O, array
-  operations, plotting, and the local Streamlit viewer app.
+  operations, plotting, optional bundled ffmpeg access, and the local Streamlit viewer
+  app.
 - `particleEmission/workflow_plan.md`: planning document for the future particle
   emission workflow, covering local source reconstruction, gyrosynchrotron forward
   synthesis, binary emission products, ROI/beam analysis, staged Kokkos adoption,
@@ -112,6 +133,25 @@ design.
 - `scripts/run_reconnection_focused_comparison.sh`: focused-transport comparison wrapper
   with the same reconnection input defaults, isotropic pitch-angle injection, and
   automatic spectra plus timing plots.
+- `scripts/run_reconnection_parker_focused_comparisons.sh`: sequential wrapper that runs
+  the Parker optimized comparison first and the focused-transport comparison second,
+  with independent benchmark roots and sequence-level logs.
+- `scripts/run_local_parker_focused_speed_accuracy_test.sh`: local benchmark wrapper
+  that runs Parker then focused three-way comparisons, prepares a post-processing Python
+  environment when needed, and writes timing plus spectrum-difference summaries.
+- `scripts/validate_reconnection_dt_match.sh`: host-side validation helper that checks
+  Kokkos summary times against the Fortran MHD `mhd_config.dat` `dt_out` value and
+  verifies that the expected compact-field and particle snapshot frames exist, while
+  also reporting the default reconnection Alfvén-time conversion to seconds.
+- `scripts/run_parker_emission_synthesis.sh`: Parker emission bridge that discovers a
+  Kokkos particle snapshot plus matching compact field, writes an emission config and
+  manifest under a new output root, then invokes the simple emission synthesis runner.
+- `scripts/render_parker_emission_movie.sh`: shell wrapper for the Parker emission movie
+  renderer, defaulting to `/tmp/kpt_postprocess_venv/bin/python` and local Parker
+  benchmark paths.
+- `scripts/run_kokkos_cpu_parker_movie_pipeline.sh`: one-command CPU Parker rerun plus
+  movie pipeline that writes per-frame particle snapshots, optional Athena/MHD emission
+  background maps, 2x4 diagnostic/emission PNG frames, and a ProRes MOV.
 - `scripts/run_fortran_reconnection_avx512.sh`: Fortran-only AVX512 comparison runner
   that builds a separate stochastic-mhd executable from an isolated source copy and runs
   the reconnection_2d Fortran benchmark without overwriting the baseline executable.
@@ -140,8 +180,9 @@ design.
 - `include/FieldBinaryIO.hpp`: custom field binary snapshot serialization helpers.
 - `include/FieldBinaryWriter.hpp`: field binary output entry point.
 - `include/AthenaFieldReader.hpp`: host-side reader that loads `apps/athena2bin.py`
-  compact 2D Athena++ background-field binaries into a `StoredCoordinateGrid` plus
-  magnetic-field and velocity `VectorField` objects for solver construction.
+  compact 2D Athena++ background-field binaries into a uniform
+  `AnalyticCoordinateGrid` plus magnetic-field and velocity `VectorField` objects for
+  solver construction.
 - `include/ParticleSystem.hpp`: single-species relativistic particle container,
   particle properties, lifecycle status, grid-boundary handling, sorting, splitting,
   and binary snapshot output.
@@ -186,6 +227,15 @@ CMakeLists.txt
      -> run_reconnection_three_cases_200
      -> run_reconnection_optimized_comparison_200
      -> run_reconnection_focused_comparison_200
+     -> shell-only Parker/focused sequence wrapper in scripts/
+
+readme.md
+  -> Chinese workflow entry point for local users
+  -> README.en.md as the English companion document
+  -> docs/code_map.md for maintainer-facing interface details
+
+README.en.md
+  -> English workflow entry point mirroring readme.md
 
 src/main.cpp
   -> AthenaFieldReader for compact Athena frame loading
@@ -208,10 +258,14 @@ apps/particle_binary_to_xdmf_hdf5.py
 
 apps/athena2bin.py
   -> Python 3
-  -> h5py, numpy, and scipy at runtime
+  -> h5py and numpy at runtime; scipy is optional for cubic interpolation
   -> Athena++ .athdf input files
   -> compact Athena background-field binary format:
      int32 nx, int32 ny, x/y face coordinates, Bx/By/Bz, Vx/Vy/Vz
+  -> optional emission_background_NNNNN.h5 files:
+     x/y face coordinates, rho_code, pressure_code when available,
+     temperature_proxy_code, thermal_density_cm3, temperature_mk
+  -> --skip-compact-output mode for generating only emission background maps
 
 apps/fortran_mhd_to_compact_field.cpp
   -> C++20 standard library only
@@ -267,6 +321,45 @@ scripts/run_fortran_reconnection_avx512.sh
   -> lixiaocanexample/stochastic-parker/examples/reconnection_2d for runtime config
   -> /home/liuyh/data/Athena++/athena_reconnection_test/bin_data by default for Fortran MHD inputs
   -> benchmark_runs/reconnection_200_fortran_avx512/fortran
+
+scripts/run_parker_emission_synthesis.sh
+  -> particleEmission.simple_emission_runner
+  -> kokkos_cpu_format_example_frame180_262k by default, or KPT_PARKER_RUN_ROOT
+  -> optional KPT_EMISSION_BACKGROUND_PATH emission-background HDF5 map
+  -> benchmark_runs/parker_emission_synthesis/parker_emission_config.json
+  -> benchmark_runs/parker_emission_synthesis/parker_emission_NNNNN.h5
+  -> benchmark_runs/parker_emission_synthesis/parker_emission_NNNNN.png
+
+particleEmission/parker_emission_movie.py
+  -> Python 3
+  -> numpy, h5py, matplotlib, optional imageio-ffmpeg, and local microwave backend at runtime
+  -> compact fieldNNNNN.bin inputs
+  -> version-4 particles_NNNNN.bin inputs
+  -> optional emission_background_NNNNN.h5 inputs
+  -> benchmark_runs/parker_emission_movie/frames/frame_NNNNN.png
+  -> benchmark_runs/parker_emission_movie/frame_index.csv
+  -> optional benchmark_runs/parker_emission_movie/parker_emission_movie.mov
+
+particleEmission/microwave_backend.py
+  -> pygsfit_cp-main/pygsfit_cp/fortran_src by default for backend source files
+  -> local rebuilt shared library loaded through ctypes
+
+particleEmission/simple_emission_runner.py
+  -> kokkos_cpu_format_example_frame180_262k by default through the shell bridge
+  -> optional emission_background_NNNNN.h5 maps from apps/athena2bin.py
+
+scripts/render_parker_emission_movie.sh
+  -> /tmp/kpt_postprocess_venv/bin/python by default, or KPT_MOVIE_PYTHON
+  -> particleEmission.parker_emission_movie
+  -> benchmark_runs/local_parker_speed_accuracy/{compact_field,kokkos_cpu} by default
+
+scripts/run_kokkos_cpu_parker_movie_pipeline.sh
+  -> cmake configure/build for cmake-build-benchmark-cpu
+  -> apps/fortran_mhd_to_compact_field.cpp executable for compact field preparation
+  -> apps/athena2bin.py --skip-compact-output for optional background-map preparation
+  -> cmake-build-benchmark-cpu/kokkos_particle_transport_app
+  -> particleEmission.parker_emission_movie
+  -> benchmark_runs/kokkos_cpu_parker_movie_YYYYMMDD_HHMMSS by default
 
 CMakePresets.json
   -> configure preset linux-kokkos-cpu-debug
@@ -332,7 +425,7 @@ FieldBinaryWriter
 AthenaFieldReader
   -> Field
   -> GridValidation
-  -> StoredCoordinateGrid
+  -> AnalyticCoordinateGrid
   -> Kokkos host mirrors and deep_copy for host-to-device loading
 
 FieldOutputCommon
@@ -409,6 +502,75 @@ PhysicalConstant
 ```
 
 ## File-by-File Interface Map
+
+### readme.md
+
+- Chinese project README.
+- Current responsibilities:
+  - gives the normal project entry point for local users;
+  - summarizes the Kokkos transport targets, Athena++/Fortran background inputs,
+    particle diagnostics, emission synthesis, and movie pipeline;
+  - documents the local CPU/CUDA build commands, compact field format, Parker/focused
+    transport run commands, and frame-boundary walltime controls;
+  - records the practical data-volume warning for 200-frame particle snapshots;
+  - points maintainers to `docs/code_map.md` for the detailed interface map.
+- Current notes:
+  - this file is intentionally Chinese because it is the primary README requested for
+    the current local workflow;
+  - physics formulas remain schematic and should stay aligned with active solver
+    behavior when coefficient or SDE conventions change.
+
+### README.en.md
+
+- English companion project README.
+- Current responsibilities:
+  - mirrors `readme.md` at the workflow level for English-speaking collaborators;
+  - documents the same build, input, transport, walltime, benchmark, and emission movie
+    entry points without adding a separate technical contract.
+- Current notes:
+  - keep this file synchronized with `readme.md` when user-facing workflow commands or
+    run-size defaults change.
+
+### emissionValidation/
+
+- Tracked synthetic emission-validation product directory.
+- Current responsibilities:
+  - stores the current validation artifacts for the uniform-source and analytic loop-top
+    cases produced by `particleEmission/validation_cases.py`;
+  - provides known HDF5 products and quicklook figures for exercising
+    `particleEmission/emission_viewer_app.py` without rerunning validation first.
+- Current notes:
+  - despite the name, this directory is currently tracked reference output rather than a
+    disposable `benchmark_runs/` result tree.
+
+### kokkos_cpu_format_example_frame180_262k/
+
+- Tracked Parker CPU example input/output bundle.
+- Current responsibilities:
+  - provides `compact_field/field00180.bin` and `compact_field/field00181.bin`;
+  - provides `kokkos_cpu/particles_00181.bin`, `summary.csv`, `run.log`,
+    `momentum_histogram_00181.csv`, and `console.log`;
+  - provides `manifest.txt`, `format_summary.txt`, and `prepare_compact_field.log` for
+    provenance of the compact-field and particle snapshot example;
+  - acts as the default input root for `scripts/run_parker_emission_synthesis.sh` when no
+    `KPT_PARKER_RUN_ROOT` override is supplied.
+- Current notes:
+  - keep this directory small and curated; large rerun products belong under
+    `benchmark_runs/`, which is ignored by Git.
+
+### pygsfit_cp-main/
+
+- Bundled external gyrosynchrotron fitting/synthesis package.
+- Current responsibilities:
+  - provides Fortran source files under `pygsfit_cp/fortran_src/` used by
+    `particleEmission/microwave_backend.py` for local backend compilation;
+  - carries upstream Python wrappers, demos, documentation, and platform-specific
+    library artifacts that help verify backend calling conventions.
+- Current notes:
+  - treat this as third-party/reference source unless an explicit task asks to update the
+    backend package itself;
+  - current emission synthesis uses a narrow ctypes wrapper rather than importing the
+    full upstream Python application workflow.
 
 ### CMakeLists.txt
 
@@ -502,9 +664,10 @@ PhysicalConstant
   - parses command-line controls as profile overrides for compact Athena field location,
     output directory, transport model, frame range, particle injection rate, rank
     scaling, particle capacity, diagnostics cadence, random seed, MHD output cadence,
-    splitting, focused pitch-angle controls, and time interpolation;
-  - loads `fieldNNNNN.bin` files through `AthenaFieldReader.hpp` with periodic x/y
-    boundaries and two ghost cells;
+    splitting, focused pitch-angle controls, time interpolation, and optional walltime
+    stopping controls;
+  - loads `fieldNNNNN.bin` files through `AthenaFieldReader.hpp` as uniform analytic
+    x/y grids with periodic boundaries and two ghost cells;
   - precomputes a legacy 16-component Parker coefficient field per MHD frame containing
     `Vx`, `Vy`, `Bx`, `By`, `Bz`, `|B|`, the Parker velocity-gradient subset,
     magnetic-component gradients, and `|B|` gradients;
@@ -538,15 +701,27 @@ PhysicalConstant
   - splits high-momentum particles after each interval using the same threshold sequence
     `pmin_split * p0 * split_ratio^split_level`;
   - writes `summary.csv` timing/statistics rows, `run.log` frame-by-frame timing logs
-    with total elapsed time, and momentum histogram CSV files for comparison with
-    Fortran diagnostics.
+    with total elapsed time, momentum histogram CSV files for comparison with Fortran
+    diagnostics, and `particles_NNNNN.bin` binary particle snapshots for direct
+    particle-cloud analysis;
+  - can restart from a completed-frame `particles_NNNNN.bin` snapshot through
+    `--restart-particle-snapshot`, restoring particle position, scalar momentum,
+    pitch-angle cosine, weight, lifecycle status, and split level before continuing at
+    the matching frame boundary;
+  - can stop cleanly after a completed frame when the configured walltime limit minus
+    reserve has been reached, writing final diagnostics for that completed frame before
+    returning successfully. If the reserve is greater than the limit, the effective
+    stop threshold is clamped to zero elapsed seconds, so the driver stops after the
+    first completed frame.
 - Local interfaces:
   - `Reconnection2DSettings`
     - Role: host-side run configuration mirroring the Fortran shell-script controls that
       matter for this reduced Parker calibration.
-    - Key data members: profile name, field/output paths, frame range, particles per
-      frame, rank scale, capacity, seed, diagnostic cadence, transport model,
-      split/time-interpolation switches, MHD `dt_out`, `p0`, `pmin`, `pmax`,
+    - Key data members: profile name, field/output paths, optional restart particle
+      snapshot path, frame range, particles per frame, rank scale, capacity, seed,
+      diagnostic cadence, histogram cadence, particle snapshot cadence, transport model,
+      split/time-interpolation switches, walltime limit/reserve seconds, MHD `dt_out`,
+      `p0`, `pmin`, `pmax`,
       `gamma_turb`, `kpara0`, `kret`, `dt_min_rel`, `dt_max_rel`, drift parameters,
       charge, `particle_v0`, `duu0`, `mu_max`, and splitting thresholds.
     - Execution-space assumptions: host-only parsing and validation.
@@ -601,6 +776,37 @@ PhysicalConstant
     - Call points: allocated in `run`, filled by `inject_uniform_particles`, advanced by
       `move_particles_one_interval`, split by `split_particles`, and copied to host by
       diagnostics.
+  - `infer_particle_snapshot_frame`
+    - Role: host-side parser for repository particle snapshot names of the form
+      `particles_NNNNN.bin`.
+    - Call points: used by `parse_settings` so `--restart-particle-snapshot` can infer
+      `start_frame` when no explicit `--start-frame` is supplied.
+  - `load_reconnection_particle_snapshot`
+    - Role: reads a version-4 repository particle binary snapshot into
+      `ReconnectionParticleStorage` for frame-boundary restart.
+    - Restored data: current 2D position, scalar momentum magnitude, pitch-angle cosine
+      `mu`, macro-particle weight, lifecycle status, and split level.
+    - Restart assumptions: particle binary snapshots do not carry the reconnection
+      pusher's per-particle substep time or Kokkos random-pool state, so the loader sets
+      every particle time to `start_frame * dt_out`, initializes `step_dt` from
+      `dt_min_rel * dt_out`, and reseeds the random pool from the configured seed plus
+      a frame-dependent offset. This is a statistical frame-boundary restart, not a
+      bitwise replay checkpoint.
+    - Call points: invoked by `run` before loading the first coefficient frame when
+      `Reconnection2DSettings::restart_particle_snapshot_path` is non-empty.
+  - `write_reconnection_particle_snapshot`
+    - Role: writes the custom reconnection particle arrays to the repository particle
+      binary snapshot format for offline conversion and particle-cloud inspection.
+    - Output format: version-4 `KPTPRT\0\0` particle snapshot containing synthetic
+      per-storage-index IDs, status, split level, current 2D position, scalar momentum
+      magnitude, pitch-angle cosine `mu`, and macro-particle weight.
+    - Current notes: the reduced reconnection storage does not keep previous positions,
+      so previous-position fields in this compatibility snapshot are filled with the
+      current position. Per-particle `time` and `step_dt` remain runtime diagnostics and
+      are not part of particle binary format version 4.
+    - Call points: invoked by `run_transport_loop` when
+      `particle_snapshot_interval > 0`, always including the final completed frame for
+      normal end-frame completion or walltime stop.
   - `ReconnectionCoefficientField`
     - Role: alias for the 21-component field consumed by the focused calibration pusher.
     - Execution-space assumptions: uses the loaded Athena grid, same ghosted storage, and
@@ -624,8 +830,8 @@ PhysicalConstant
     - Call points: selected by `run_transport_loop` when `--transport parker` is active.
   - `run_transport_loop`
     - Role: transport-coefficient-type-templated frame loop that keeps result writing,
-      injection, splitting, and diagnostics shared while dispatching to Parker or
-      focused movers at compile time.
+      particle snapshots, injection, splitting, walltime checks, and diagnostics shared
+      while dispatching to Parker or focused movers at compile time.
     - Execution-space assumptions: host-side orchestration; kernel dispatch is delegated
       to the selected mover.
     - Call points: invoked by `run` after loading either Parker or focused coefficient
@@ -633,8 +839,12 @@ PhysicalConstant
 - Current limitations:
   - This driver targets the exact `reconnection_2d` branch used by the provided script,
     not the full Fortran feature matrix. NLGC, momentum diffusion, 3D-in-2D motion,
-    open particle boundaries, MPI exchange, HDF5 local distributions, restart, and
+    open particle boundaries, MPI exchange, HDF5 local distributions, and
     tracked-particle outputs are intentionally outside this calibration entry point.
+  - Kokkos walltime stopping is a clean frame-boundary stop. It preserves diagnostics
+    and optional particle snapshots for the last completed frame; those snapshots can be
+    used for frame-boundary particle-state restart, but the driver still does not save
+    RNG state for bitwise-identical continuation.
   - `particle-64000` is a local particle-adaptation and timing profile, not the original
     Fortran script's particle count. Use `--profile fortran-rank` for one Fortran MPI
     rank (`1600` particles/frame), or `--profile fortran-global`/`--profile full` for
@@ -652,9 +862,15 @@ PhysicalConstant
   - reconstructs a 2D global mesh from Athena++ mesh blocks using `LogicalLocations`;
   - extracts cell-centered magnetic components `Bcc1`, `Bcc2`, `Bcc3` and primitive
     velocity components `vel1`, `vel2`, `vel3`;
+  - optionally extracts primitive density and pressure-like components (`rho`, `press`,
+    or common aliases) and writes an emission-background HDF5 file per frame;
   - resamples the reconstructed arrays onto a uniform target grid with SciPy
-    `RegularGridInterpolator`;
-  - writes one compact binary file per input snapshot under `./field/`.
+    `RegularGridInterpolator` when available, otherwise with a NumPy bilinear fallback;
+  - writes one compact binary file per input snapshot under `./field/`;
+  - exposes a CLI for input glob/explicit files, output frame range, target shape, and
+    optional background-map scaling through reference density/temperature values;
+  - can run in `--skip-compact-output` mode to write only emission-background HDF5 maps
+    without duplicating compact solver field files.
 - Current binary payload:
   - `int32 nx`
   - `int32 ny`
@@ -667,6 +883,11 @@ PhysicalConstant
   - `double Vy[nx * ny]`
   - `double Vz[nx * ny]`
 - Current notes:
+  - Optional emission-background files use schema `kpt_emission_background_v1` and store
+    `x_edges`, `y_edges`, `rho_code`, optional `pressure_code`,
+    `temperature_proxy_code`, `thermal_density_cm3`, and `temperature_mk`. The physical
+    density/temperature maps are reference-scaled by mean or max normalization unless
+    `--background-normalization none` is requested.
   - The payload has no magic, version, endian marker, units, time stamp, or coordinate
     system metadata. The C++ reader therefore validates only dimensions, payload length,
     monotonic coordinates, finite values, and caller-supplied unit scales.
@@ -680,9 +901,35 @@ PhysicalConstant
     `x_min + (i + 0.5) dx` and `y_min + (j + 0.5) dy`, matching cell-centered Athena++
     values rather than treating source samples as domain endpoints.
   - Cubic interpolation is smooth but can overshoot and does not preserve `div B = 0`
-    exactly because vector components are resampled independently.
+    exactly because vector components are resampled independently. The NumPy fallback
+    avoids the SciPy dependency but is only bilinear.
   - Values remain in Athena/code units unless the caller applies scale factors while
     loading or converting.
+
+### particleEmission/background_io.py
+
+- Python emission-background map reader.
+- Current responsibilities:
+  - reads HDF5 files using the `kpt_emission_background_v1` layout written by
+    `apps/athena2bin.py --emission-background-dir`;
+  - validates `x_edges`, `y_edges`, `thermal_density_cm3`, and `temperature_mk` shape,
+    finiteness, and non-negativity;
+  - coarsens thermal-density and temperature maps onto the simple emission image grid
+    with the same `coarse_average_2d` helper used for compact magnetic fields.
+- Local interfaces:
+  - `EmissionBackgroundMaps`
+    - Role: in-memory container for thermal/background maps on a 2D source grid.
+    - Key data members: `x_edges`, `y_edges`, `thermal_density_cm3`,
+      `temperature_mk`, `source_path`, and `source_kind`.
+    - Execution-space assumptions: Python/NumPy host-only post-processing.
+    - Call points: returned by `read_emission_background_maps` and consumed by
+      `coarse_background_maps` inside `particleEmission/simple_emission_runner.py`.
+  - `read_emission_background_maps`
+    - Role: load one HDF5 background map with clear dependency errors when `h5py` is
+      unavailable.
+  - `coarse_background_maps`
+    - Role: produce image-grid thermal density and temperature arrays for per-pixel
+      microwave source closure.
 
 ### apps/field_binary_to_xdmf_hdf5.py
 
@@ -841,6 +1088,9 @@ PhysicalConstant
     `conf_reconnection.dat` and patches the calibration diffusion parameters;
   - passes `-ft .true.` to the Fortran executable and `--transport focused` to the
     Kokkos executable for focused-transport runs;
+  - exposes a walltime interface for scheduler-limited runs: Fortran receives
+    `-qh ${KPT_FORTRAN_WALLTIME_HOURS}` and Kokkos receives
+    `--walltime-hours/--walltime-reserve-minutes` when a Kokkos walltime is configured;
   - runs the Fortran reference case, Kokkos CUDA case, and Kokkos CPU case in that order;
   - limits the default CPU budget to `16` cores through `KPT_CPU_CORES`, using that value
     for build parallelism, Fortran MPI rank count, and Kokkos CPU thread count unless
@@ -850,6 +1100,13 @@ PhysicalConstant
     it;
   - writes separate result directories under the benchmark root:
     `fortran`, `kokkos_gpu`, and `kokkos_cpu`;
+  - enables Kokkos particle binary snapshots by default at the same cadence as
+    `KPT_HISTOGRAM_INTERVAL`, writing `particles_NNNNN.bin` files under each Kokkos
+    result directory;
+  - forwards `KPT_RESTART_PARTICLE_SNAPSHOT` or `KPT_KOKKOS_RESTART_PARTICLE_SNAPSHOT`
+    to the Kokkos executable as `--restart-particle-snapshot`; when `KPT_START_FRAME`
+    is unset, the wrapper infers it from `particles_NNNNN.bin`, and Kokkos case
+    directories are preserved instead of deleted before launch;
   - writes configure/build logs plus per-case runtime logs so CLion runs can be inspected
     after completion;
   - runs `apps/plot_reconnection_benchmark_spectra.py` and
@@ -866,11 +1123,25 @@ PhysicalConstant
     or an empty string when portable CPU binaries are needed;
   - `KPT_PREPARE_COMPACT_FIELD=0` disables automatic field conversion when a trusted
     compact field directory is supplied through `KPT_FIELD_DIR`;
+  - `KPT_PARTICLE_SNAPSHOT_INTERVAL=0` disables Kokkos particle snapshots, while any
+    positive value writes snapshots at that frame cadence and always includes the final
+    frame;
+  - `KPT_WALLTIME_HOURS` sets a common scheduler-style walltime for Fortran and Kokkos;
+    `KPT_FORTRAN_WALLTIME_HOURS` overrides the Fortran `-qh` value and defaults to
+    `12.0` hours when no common walltime is set; `KPT_KOKKOS_WALLTIME_HOURS` enables
+    Kokkos frame-boundary walltime stopping and overrides the common value for Kokkos;
+    `KPT_KOKKOS_WALLTIME_RESERVE_MINUTES` or `KPT_WALLTIME_RESERVE_MINUTES` controls
+    the Kokkos reserve, defaulting to `30` minutes when Kokkos walltime is enabled;
+  - for walltime-limited production jobs, prefer `KPT_SKIP_POSTPROCESS=1` and run
+    plotting after confirming the completed frame ranges, because spectra post-processing
+    expects matching output files at its configured frame cadence;
   - environment variables such as `KPT_BENCHMARK_ROOT`, `KPT_FIELD_DIR`,
     `KPT_FORTRAN_MHD_DIR`, `KPT_TRANSPORT_MODEL`, `KPT_FORTRAN_BUILD_MODE`,
     `KPT_END_FRAME`, `KPT_CPU_CORES`, `KPT_MPI_SIZE`, `KPT_KOKKOS_CPU_THREADS`,
-    `KPT_PARTICLE_V0`, `KPT_DUU0`, and `KPT_CXX_PARTICLE_CAPACITY` can override local
-    paths, transport model, and run size without editing the script.
+    `KPT_PARTICLE_V0`, `KPT_DUU0`, `KPT_CXX_PARTICLE_CAPACITY`,
+    `KPT_PARTICLE_SNAPSHOT_INTERVAL`, and walltime variables can override local paths,
+    transport model, output cadence, scheduler limits, and run size without editing the
+    script.
 
 ### scripts/run_reconnection_optimized_comparison.sh
 
@@ -903,6 +1174,189 @@ PhysicalConstant
   - writes results under `benchmark_runs/reconnection_focused_200` unless
     `KPT_BENCHMARK_ROOT` overrides it.
 
+### scripts/run_reconnection_parker_focused_comparisons.sh
+
+- Sequential Parker-plus-focused comparison wrapper.
+- Current responsibilities:
+  - runs `scripts/run_reconnection_optimized_comparison.sh` first with
+    `KPT_TRANSPORT_MODEL=parker`;
+  - runs `scripts/run_reconnection_focused_comparison.sh` second with
+    `KPT_TRANSPORT_MODEL=focused`;
+  - forces separate per-case benchmark roots through `KPT_BENCHMARK_ROOT` so inherited
+    shell state does not make the two runs overwrite each other;
+  - writes a sequence manifest and per-case logs under
+    `benchmark_runs/reconnection_parker_focused_sequence` by default.
+- Current notes:
+  - `KPT_PARKER_BENCHMARK_ROOT`, `KPT_FOCUSED_BENCHMARK_ROOT`, and
+    `KPT_SEQUENCE_LOG_ROOT` can override the per-case result locations and the combined
+    log directory;
+  - command-line arguments passed to this wrapper are forwarded unchanged to both
+    underlying comparison wrappers;
+  - per-case Fortran configuration names can be overridden with
+    `KPT_PARKER_FORTRAN_CONF_NAME` and `KPT_FOCUSED_FORTRAN_CONF_NAME`.
+
+### scripts/run_local_parker_focused_speed_accuracy_test.sh
+
+- Local Parker/focused speed-and-result comparison wrapper.
+- Current responsibilities:
+  - prepares `/tmp/kpt_postprocess_venv` with `numpy`, `h5py`, and `matplotlib` by
+    default when `KPT_POSTPROCESS_PYTHON` is not already set;
+  - runs `scripts/run_reconnection_parker_focused_comparisons.sh`, which in turn runs
+    Fortran, Kokkos CUDA, and Kokkos CPU for Parker first and focused transport second;
+  - writes local benchmark roots under `benchmark_runs/local_parker_speed_accuracy`,
+    `benchmark_runs/local_focused_speed_accuracy`, and sequence logs under
+    `benchmark_runs/local_parker_focused_speed_accuracy` by default;
+  - parses each run's `reconnection_timing.csv` and `reconnection_spectra.csv` after
+    post-processing completes;
+  - writes `local_speed_accuracy_summary.csv` and
+    `local_speed_accuracy_summary.txt` with elapsed-time speedups relative to Fortran
+    plus relative spectrum differences between Kokkos and Fortran.
+- Current notes:
+  - defaults keep `KPT_PARTICLE_SNAPSHOT_INTERVAL=0` so solver speed comparisons are not
+    dominated by particle binary I/O. Set `KPT_PARTICLE_SNAPSHOT_INTERVAL=10` or another
+    positive cadence when particle snapshots are part of the test target.
+  - `KPT_LOCAL_PREPARE_POSTPROCESS_PYTHON=0` disables automatic Python environment
+    preparation; `KPT_LOCAL_POSTPROCESS_VENV` can change the venv path.
+  - all standard `KPT_*` run-size controls from
+    `scripts/run_reconnection_three_cases.sh` still apply.
+
+### scripts/validate_reconnection_dt_match.sh
+
+- Reconnection output time-step validation helper.
+- Current responsibilities:
+  - reads the Fortran MHD binary `mhd_config.dat` and extracts `dt_out` from the same
+    field used by `apps/fortran_mhd_to_compact_field.cpp`;
+  - reads a Kokkos `summary.csv` and verifies that every reported physical time equals
+    `frame * dt_out` within floating-point tolerance;
+  - verifies that the compact lower/upper field frames and final Kokkos particle
+    snapshot exist under the selected run root;
+  - reports the code-time interval converted to seconds using the default reconnection
+    `tau_A=L0/v_A` normalization (`L0=5e6 m`, `B0=50 G`, `n0=1e10 cm^-3`) unless an
+    override is supplied.
+- Current defaults:
+  - run root:
+    `benchmark_runs/kokkos_cpu_format_example_frame180_262k`;
+  - MHD config:
+    `/home/liuyh/data/Athena++/athena_reconnection_test/bin_data/mhd_config.dat`;
+  - summary CSV:
+    `${run_root}/kokkos_cpu/summary.csv`.
+- Current notes:
+  - the script uses only Python standard-library modules, so it does not require NumPy
+    or h5py;
+  - optional arguments are `run_root`, `mhd_config`, and `summary_csv` in that order.
+  - `KPT_TIME_UNIT_SECONDS` can override the physical time unit directly. Otherwise,
+    `KPT_RECONNECTION_L0_M`, `KPT_RECONNECTION_B0_G`, and
+    `KPT_RECONNECTION_N0_CM3` control the reported Alfvén-time conversion.
+
+### scripts/run_parker_emission_synthesis.sh
+
+- Parker emission bridge for the current particle-snapshot workflow.
+- Current responsibilities:
+  - discovers the latest `particles_NNNNN.bin` under the selected Kokkos Parker output
+    directory, unless `KPT_PARKER_EMISSION_FRAME` or `KPT_PARTICLE_PATH` is supplied;
+  - selects the matching compact field frame, falling back from `fieldNNNNN.bin` to the
+    previous frame when the particle output frame is one interval beyond the loaded
+    background frame;
+  - creates an output root under `benchmark_runs/parker_emission_synthesis` by default,
+    with symlinks to the selected field, particle snapshot, and optional background map;
+  - writes `manifest.txt` and `parker_emission_config.json` so the synthesis inputs and
+    coronal closure parameters are reproducible;
+  - invokes `python -m particleEmission.simple_emission_runner` and writes
+    `parker_emission_NNNNN.h5`, `parker_emission_NNNNN.png`, and `emission.log`.
+- Current notes:
+  - defaults target the repository Parker CPU format example
+    `kokkos_cpu_format_example_frame180_262k`;
+  - `KPT_PARKER_RUN_ROOT`, `KPT_FIELD_DIR`, `KPT_PARTICLE_DIR`, `KPT_FIELD_PATH`,
+    `KPT_PARTICLE_PATH`, and `KPT_PARKER_EMISSION_ROOT` can redirect input/output
+    locations;
+  - `KPT_EMISSION_BACKGROUND_PATH` can point to an Athena/MHD converted background HDF5
+    file from `apps/athena2bin.py --emission-background-dir`; otherwise the synthesis
+    uses the constant thermal density and temperature from the generated config;
+  - `KPT_EMISSION_*` variables override image size, viewing angle, LOS depth, magnetic
+    field scaling, macro-particle electron count, and default thermal/source closure
+    parameters.
+
+### particleEmission/parker_emission_movie.py
+
+- Parker diagnostic and emission movie renderer.
+- Current responsibilities:
+  - validates that each requested frame has a compact `fieldNNNNN.bin` and matching
+    version-4 `particles_NNNNN.bin`, plus an optional
+    `emission_background_NNNNN.h5`;
+  - reads particle snapshots with a NumPy structured dtype for the scalar-momentum
+    version-4 record layout, avoiding per-particle Python `struct` loops;
+  - computes Bz and a code-unit current proxy `Jz = dBy/dx - dBx/dy` from the compact
+    field and coarse-averages them onto the movie image grid;
+  - deposits active particle weights below and above the configured kinetic-energy
+    threshold, defaulting to `1.5 keV`;
+  - reconstructs local nonthermal density and a power-law slope approximation from
+    weighted particle energy histograms;
+  - synthesizes microwave spectra on the requested frequency grid with the local
+    backend, using quantized cache keys that include nonthermal density, magnetic field,
+    power-law index, thermal density, and temperature;
+  - writes a 2x4 PNG panel per frame: Bz, Jz, sub-threshold particles,
+    super-threshold particles, beam-convolved 1/3/5 GHz images, and a full-domain
+    spectrum panel;
+  - optionally calls `ffmpeg` with `prores_ks`, profile 3, and `yuv422p10le` to write a
+    ProRes MOV.
+- Current notes:
+  - movie encoding first uses `--ffmpeg` or `ffmpeg` from `PATH`, then falls back to the
+    optional `imageio-ffmpeg` binary when that package is installed in the Python
+    environment;
+  - the renderer intentionally fails when particle snapshots are missing rather than
+    reusing one particle frame across multiple MHD frames;
+  - current reconnection particle snapshots use a placeholder `energy_scale_erg=1.0`,
+    so absolute keV thresholds should be treated as a unit-calibration control until the
+    transport-to-CGS energy normalization is finalized.
+
+### scripts/render_parker_emission_movie.sh
+
+- Shell wrapper for `particleEmission.parker_emission_movie`.
+- Current responsibilities:
+  - selects `/tmp/kpt_postprocess_venv/bin/python` by default;
+  - targets `benchmark_runs/local_parker_speed_accuracy/compact_field` and
+    `benchmark_runs/local_parker_speed_accuracy/kokkos_cpu` by default;
+  - forwards `KPT_MOVIE_*`, `KPT_FIELD_DIR`, `KPT_PARTICLE_DIR`,
+    `KPT_EMISSION_BACKGROUND_DIR`, `KPT_FFMPEG`, and output-root overrides to the Python
+    renderer.
+- Current notes:
+  - the existing local Parker speed benchmark did not write particle snapshots, so this
+    wrapper needs a rerun with `KPT_PARTICLE_SNAPSHOT_INTERVAL=1` or another suitable
+    cadence before it can render a real 200-frame particle/emission movie.
+
+### scripts/run_kokkos_cpu_parker_movie_pipeline.sh
+
+- One-command CPU Parker rerun and movie pipeline.
+- Current responsibilities:
+  - configures and builds the CPU Kokkos executable in `cmake-build-benchmark-cpu`;
+  - prepares compact MHD field inputs with `fortran_mhd_to_compact_field` unless
+    `KPT_FIELD_DIR` is supplied;
+  - prepares Athena/MHD emission-background maps with
+    `apps/athena2bin.py --skip-compact-output` unless `KPT_PREPARE_BACKGROUND=0`;
+  - reruns `kokkos_particle_transport_app` with `--transport parker` and
+    `--particle-snapshot-interval 1` by default;
+  - forwards `KPT_RESTART_PARTICLE_SNAPSHOT` or `KPT_KOKKOS_RESTART_PARTICLE_SNAPSHOT`
+    to the solver and infers `START_FRAME` from `particles_NNNNN.bin` when
+    `KPT_START_FRAME` is not set;
+  - renders the requested movie frames with `particleEmission.parker_emission_movie`;
+  - installs `imageio-ffmpeg` into the selected Python environment when needed and when
+    `KPT_ENSURE_IMAGEIO_FFMPEG=1`.
+- Current defaults:
+  - output root: timestamped `benchmark_runs/kokkos_cpu_parker_movie_YYYYMMDD_HHMMSS`;
+  - solver frame range: `0..200`;
+  - movie frame range: `1..200`;
+  - particle injection: `1600 * 16` particles per frame, matching the local Parker
+    speed/accuracy benchmark;
+  - particle snapshots: every completed frame;
+  - movie grid: `128x128`, with beam FWHM `3` pixels and ProRes MOV output.
+- Current notes:
+  - the default 200-frame run writes roughly `50+ GB` of particle snapshots, so disk
+    space should be checked before launching;
+  - `KPT_KOKKOS_WALLTIME_HOURS` or `KPT_WALLTIME_HOURS` are forwarded to the solver
+    walltime interface for scheduler-style jobs;
+  - `KPT_RENDER_MOVIE=0` runs only the CPU solver/data-preparation stages, and
+    `KPT_RERUN_SOLVER=0` can render from an already completed snapshot directory.
+
 ### scripts/run_fortran_reconnection_avx512.sh
 
 - Fortran-only AVX512 comparison runner for the Li Xiaocan `reconnection_2d` benchmark.
@@ -928,6 +1382,8 @@ PhysicalConstant
     `benchmark_runs/reconnection_200_fortran_avx512/fortran_avx512_flags.make`;
   - runs only the Fortran reconnection case with the same calibration settings as
     `scripts/run_reconnection_three_cases.sh`;
+  - passes `KPT_FORTRAN_WALLTIME_HOURS` to the Fortran `-qh` quota, defaulting through
+    `KPT_WALLTIME_HOURS` to `12.0` hours;
   - writes output under `benchmark_runs/reconnection_200_fortran_avx512/fortran` so the
     baseline three-case run remains intact.
 - Current notes:
@@ -972,7 +1428,7 @@ PhysicalConstant
 - `template <typename DeviceType, typename LayoutType> struct AthenaBackgroundField`
   - Intended role: solver-ready bundle returned by the reader.
   - Current visible type aliases:
-    - `grid_type = StoredCoordinateGrid<2, DeviceType, LayoutType, 3>`
+    - `grid_type = AnalyticCoordinateGrid<2, DeviceType, LayoutType, 3>`
     - `vector_field_type = VectorField<grid_type, 3, LayoutType>`
   - Current visible data members:
     - `grid_type grid`
@@ -992,8 +1448,8 @@ PhysicalConstant
     - accepts a file path and optional `AthenaBinaryFieldReadOptions<2>`;
     - reads `int32 nx`, `int32 ny`, x/y face coordinates, then contiguous `Bx`, `By`,
       `Bz`, `Vx`, `Vy`, and `Vz` arrays;
-    - constructs a `StoredCoordinateGrid` using physical face coordinates and ghost-face
-      coordinates extrapolated from the first/last physical cell widths;
+    - validates that x/y face coordinates are uniformly spaced and constructs a uniform
+      `AnalyticCoordinateGrid` from the physical lower face and grid spacing;
     - copies field payloads through host mirrors and `Kokkos::deep_copy`;
     - fills field ghost cells after loading.
   - Current execution-space assumptions:
@@ -1004,9 +1460,10 @@ PhysicalConstant
       be initialized before calling the reader.
   - Current validation:
     - rejects non-positive dimensions, non-finite or non-ascending coordinates,
-      non-finite field values, non-positive scales, trailing payload, and host endian
+      non-uniform compact-grid face coordinates, non-finite field values, non-positive
+      scales, trailing payload, and host endian
       mismatch;
-    - delegates grid metadata and stored-coordinate validation to `GridValidation`.
+    - delegates grid metadata and analytic-coordinate validation to `GridValidation`.
 
 ### include/Field.hpp
 
@@ -2342,6 +2799,7 @@ PhysicalConstant
     - `ParticleSplitStatistics split_particles_on_energy_growth()`
     - `void apply_curvilinear_momentum_correction(CorrectionFunctor correction_functor)`
     - `void write_binary_snapshot(const std::string& file_path) const`
+    - `static ParticleSystem read_binary_snapshot(const std::string& file_path, size_type minimum_capacity, const char* label)`
   - Current notes:
     - The container currently supports one particle species per `ParticleSystem`.
       Multi-species transport should be represented by separate solver runs or a future
@@ -2389,6 +2847,12 @@ PhysicalConstant
       format currently uses magic `KPTPRT\0\0` and version `4`. Version 4 stores one
       scalar momentum magnitude per particle; the Python converter still reads legacy
       version-2 and version-3 vector-momentum snapshots.
+    - `read_binary_snapshot` reconstructs a new `ParticleSystem` from a version-4
+      snapshot, validates species/properties/splitting metadata, restores all particle
+      arrays, and allows a larger `minimum_capacity` so a restarted run can keep
+      injecting or splitting particles after loading. It intentionally supports only the
+      current scalar-momentum restart format, not legacy vector-momentum visualization
+      snapshots.
     - `apply_grid_boundary_conditions` wraps active particles in periodic dimensions and
       applies the same periodic shift to `previous_position` and
       `previous_step_position` so later curvilinear corrections see a continuous local

@@ -167,6 +167,20 @@ Focused transport uses:
 --transport focused
 ```
 
+Restart from a completed-frame particle snapshot:
+
+```bash
+cmake-build-benchmark-cpu/kokkos_particle_transport_app \
+  --profile fortran-global \
+  --transport parker \
+  --restart-particle-snapshot benchmark_runs/kokkos_cpu/particles_00100.bin \
+  --field-dir benchmark_runs/compact_field \
+  --output-dir benchmark_runs/kokkos_cpu \
+  --end-frame 200
+```
+
+When the snapshot name matches `particles_XXXXX.bin`, the driver infers `--start-frame XXXXX`; shell wrappers expose the same path through `KPT_RESTART_PARTICLE_SNAPSHOT=/path/to/particles_00100.bin`.
+
 ## Walltime Control
 
 The Kokkos driver can stop cleanly at a completed frame:
@@ -301,8 +315,8 @@ The corresponding implementation is in `include/LegencyModel.hpp`, `include/Focu
 
 ## Current Limitations
 
-- The reconnection calibration driver is not a general production restart system.
-- Kokkos walltime stopping writes final diagnostics at a completed frame but does not serialize a resumable RNG/checkpoint state.
+- The reconnection calibration driver supports frame-boundary particle-state restart from `particles_XXXXX.bin`, but it is not a general production checkpoint system.
+- Kokkos walltime stopping writes final diagnostics and optional particle snapshots at a completed frame; restart restores particle state but does not restore a bitwise-reproducible RNG state.
 - Current reduced reconnection particle snapshots store scalar momentum magnitude but not full momentum direction.
 - Parker emission reconstruction treats stored `mu` as unavailable; focused transport is the branch that carries physical pitch-angle information.
 - Absolute particle energy calibration for emission thresholds still depends on the transport-to-CGS normalization selected for a given run.

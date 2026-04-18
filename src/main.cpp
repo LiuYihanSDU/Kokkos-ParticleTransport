@@ -1,6 +1,7 @@
 #include <Kokkos_Core.hpp>
 
 #include <algorithm>
+#include <array>
 #include <chrono>
 #include <cmath>
 #include <cctype>
@@ -13,6 +14,7 @@
 #include <sstream>
 #include <stdexcept>
 #include <string>
+#include <string_view>
 #include <vector>
 
 #include "AthenaFieldReader.hpp"
@@ -25,6 +27,8 @@ namespace Reconnection2DCalibration {
 
 inline constexpr int parker_coefficient_component_count = 16;
 inline constexpr int coefficient_component_count = 21;
+inline constexpr int reconnection_particle_space_dim = 2;
+inline constexpr std::int32_t reconnection_particle_custom_species = 3;
 
 enum class TransportModel {
     Parker,
@@ -111,6 +115,7 @@ struct Reconnection2DSettings {
     std::string profile_name{"particle-64000"};
     std::string field_dir{"cmake-build-debug/field_fortran_check"};
     std::string output_dir{"cmake-build-debug/reconnection_particle_64000"};
+    std::string restart_particle_snapshot_path{};
     TransportModel transport_model{TransportModel::Parker};
     int start_frame{0};
     int end_frame{2};
@@ -120,9 +125,12 @@ struct Reconnection2DSettings {
     std::uint64_t seed{114514};
     int diagnostic_interval{1};
     int histogram_interval{1};
+    int particle_snapshot_interval{1};
     int max_particle_steps_per_interval{200000};
     bool split_particles{true};
     bool time_interpolation{true};
+    double walltime_limit_seconds{0.0};
+    double walltime_reserve_seconds{0.0};
 
     double mhd_dt{0.1};
     double p0{0.1};
@@ -152,19 +160,59 @@ struct Reconnection2DSettings {
     }
 
     /**
+     * Return whether this run should stop after reaching a wall-clock limit.
+     */
+    bool walltime_limit_enabled() const {
+        return walltime_limit_seconds > 0.0;
+    }
+
+    /**
+     * Return whether this run should initialize particles from a frame-boundary snapshot.
+     */
+    bool restart_enabled() const {
+        return !restart_particle_snapshot_path.empty();
+    }
+
+    /**
+     * Return the elapsed seconds at which the frame loop should stop.
+     */
+    double walltime_stop_seconds() const {
+        return std::max(0.0, walltime_limit_seconds - walltime_reserve_seconds);
+    }
+
+    /**
      * Validate host-side controls before launching kernels.
      */
     void validate() const {
         if (end_frame <= start_frame) {
             throw std::runtime_error("Reconnection2DSettings: end frame must exceed start frame.");
         }
+        if (start_frame < 0) {
+            throw std::runtime_error("Reconnection2DSettings: start frame must be non-negative.");
+        }
+        if (restart_enabled() &&
+            !std::filesystem::exists(restart_particle_snapshot_path)) {
+            throw std::runtime_error(
+                "Reconnection2DSettings: restart particle snapshot does not exist.");
+        }
         if (particles_per_frame == 0 || rank_scale == 0 || particle_capacity == 0) {
             throw std::runtime_error(
                 "Reconnection2DSettings: particle counts and capacity must be positive.");
         }
-        if (diagnostic_interval <= 0 || max_particle_steps_per_interval <= 0) {
+        if (diagnostic_interval <= 0 || particle_snapshot_interval < 0 ||
+            max_particle_steps_per_interval <= 0) {
             throw std::runtime_error(
-                "Reconnection2DSettings: diagnostic interval and step guard must be positive.");
+                "Reconnection2DSettings: diagnostic interval and step guard must be "
+                "positive, and particle snapshot interval must be non-negative.");
+        }
+        if (!std::isfinite(walltime_limit_seconds) ||
+            walltime_limit_seconds < 0.0 ||
+            !std::isfinite(walltime_reserve_seconds) ||
+            walltime_reserve_seconds < 0.0 ||
+            (walltime_limit_seconds <= 0.0 && walltime_reserve_seconds > 0.0)) {
+            throw std::runtime_error(
+                "Reconnection2DSettings: walltime limit must be non-negative, "
+                "and reserve requires a positive walltime limit.");
         }
         if (!std::isfinite(mhd_dt) || mhd_dt <= 0.0 ||
             !std::isfinite(p0) || p0 <= 0.0 ||
@@ -240,7 +288,8 @@ struct ReconnectionParticleStorage {
     using execution_space = typename DeviceTraits<DeviceType>::execution_space;
     using memory_space = typename DeviceTraits<DeviceType>::memory_space;
     using layout_type = LayoutType;
-    using position_view_type = Kokkos::View<double*[2], layout_type, memory_space>;
+    using position_view_type =
+        Kokkos::View<double*[reconnection_particle_space_dim], layout_type, memory_space>;
     using scalar_view_type = Kokkos::View<double*, layout_type, memory_space>;
     using int_view_type = Kokkos::View<int*, layout_type, memory_space>;
     using size_type = typename scalar_view_type::size_type;
@@ -364,6 +413,40 @@ std::string field_file_path(const std::string& field_dir, const int frame) {
 }
 
 /**
+ * Return a zero-padded particle snapshot path for one output frame.
+ */
+std::string particle_snapshot_file_path(const std::string& output_dir,
+                                        const int frame) {
+    std::ostringstream path;
+    path << output_dir << "/particles_" << std::setw(5) << std::setfill('0')
+         << frame << ".bin";
+    return path.str();
+}
+
+/**
+ * Infer the completed frame number from a repository particle snapshot file name.
+ */
+int infer_particle_snapshot_frame(const std::string& file_path) {
+    const std::string name = std::filesystem::path(file_path).filename().string();
+    constexpr std::string_view prefix{"particles_"};
+    constexpr std::string_view suffix{".bin"};
+    if (name.size() <= prefix.size() + suffix.size() ||
+        name.compare(0, prefix.size(), prefix) != 0 ||
+        name.compare(name.size() - suffix.size(), suffix.size(), suffix) != 0) {
+        return -1;
+    }
+    const std::string digits =
+        name.substr(prefix.size(), name.size() - prefix.size() - suffix.size());
+    if (digits.empty() ||
+        !std::all_of(digits.begin(), digits.end(), [](const unsigned char c) {
+            return std::isdigit(c) != 0;
+        })) {
+        return -1;
+    }
+    return std::stoi(digits);
+}
+
+/**
  * Return a field directory for the short 64000-particle test available on this
  * workstation. The Fortran-derived directory is preferred because it is known to
  * match the reference `mhd_data_0000..0002` snapshots.
@@ -395,6 +478,7 @@ void apply_run_profile(Reconnection2DSettings& settings,
         settings.particle_capacity = 1000000;
         settings.diagnostic_interval = 1;
         settings.histogram_interval = 1;
+        settings.particle_snapshot_interval = 1;
         return;
     }
 
@@ -408,6 +492,7 @@ void apply_run_profile(Reconnection2DSettings& settings,
         settings.particle_capacity = 8192;
         settings.diagnostic_interval = 1;
         settings.histogram_interval = 1;
+        settings.particle_snapshot_interval = 1;
         return;
     }
 
@@ -421,6 +506,7 @@ void apply_run_profile(Reconnection2DSettings& settings,
         settings.particle_capacity = 1000000;
         settings.diagnostic_interval = 1;
         settings.histogram_interval = 10;
+        settings.particle_snapshot_interval = 10;
         return;
     }
 
@@ -434,6 +520,7 @@ void apply_run_profile(Reconnection2DSettings& settings,
         settings.particle_capacity = 16000000;
         settings.diagnostic_interval = 1;
         settings.histogram_interval = 10;
+        settings.particle_snapshot_interval = 10;
         return;
     }
 
@@ -1815,6 +1902,244 @@ void write_momentum_histogram(const ParticleStorageType& particles,
 }
 
 /**
+ * Write one trivially copyable scalar to a binary particle snapshot stream.
+ */
+template <typename T>
+void write_particle_binary_scalar(std::ofstream& stream, const T& value) {
+    stream.write(reinterpret_cast<const char*>(&value), sizeof(T));
+    if (!stream) {
+        throw std::runtime_error("Failed to write particle binary scalar.");
+    }
+}
+
+/**
+ * Read one trivially copyable scalar from a binary particle snapshot stream.
+ */
+template <typename T>
+T read_particle_binary_scalar(std::ifstream& stream) {
+    T value{};
+    stream.read(reinterpret_cast<char*>(&value), sizeof(T));
+    if (!stream) {
+        throw std::runtime_error("Failed to read particle binary scalar.");
+    }
+    return value;
+}
+
+/**
+ * Return whether two finite scalar metadata values are equal within roundoff.
+ */
+bool restart_metadata_matches(const double actual, const double expected) {
+    if (!std::isfinite(actual) || !std::isfinite(expected)) {
+        return false;
+    }
+    const double scale = std::max({1.0, std::abs(actual), std::abs(expected)});
+    return std::abs(actual - expected) <= 1.0e-12 * scale;
+}
+
+/**
+ * Load a version-4 repository particle snapshot into reconnection particle storage.
+ *
+ * The repository particle snapshot format does not carry the reconnection pusher's
+ * per-particle substep time or the Kokkos random-pool state. Restart therefore resumes
+ * from a completed MHD frame boundary: all loaded particle times are reset to
+ * restart_frame * dt_out and the next interval receives a fresh RNG sequence.
+ */
+template <typename ParticleStorageType>
+void load_reconnection_particle_snapshot(ParticleStorageType& particles,
+                                         const Reconnection2DSettings& settings,
+                                         const int restart_frame) {
+    std::ifstream stream(settings.restart_particle_snapshot_path, std::ios::binary);
+    if (!stream) {
+        throw std::runtime_error("Failed to open restart particle snapshot.");
+    }
+
+    constexpr std::array<char, 8> expected_magic{
+        'K', 'P', 'T', 'P', 'R', 'T', '\0', '\0'
+    };
+    std::array<char, 8> magic{};
+    stream.read(magic.data(), static_cast<std::streamsize>(magic.size()));
+    if (!stream || magic != expected_magic) {
+        throw std::runtime_error(
+            "Restart particle snapshot is not a repository KPTPRT file.");
+    }
+
+    const auto version = read_particle_binary_scalar<std::uint32_t>(stream);
+    const auto endian_marker = read_particle_binary_scalar<std::uint32_t>(stream);
+    if (version != 4u) {
+        throw std::runtime_error(
+            "Restart particle snapshot must use particle binary version 4.");
+    }
+    if (endian_marker != 0x01020304u) {
+        throw std::runtime_error(
+            "Restart particle snapshot endian does not match this host.");
+    }
+
+    const auto space_dim = read_particle_binary_scalar<std::int32_t>(stream);
+    const auto species = read_particle_binary_scalar<std::int32_t>(stream);
+    const auto particle_count = read_particle_binary_scalar<std::uint64_t>(stream);
+    const auto snapshot_capacity = read_particle_binary_scalar<std::uint64_t>(stream);
+    const double rest_mass = read_particle_binary_scalar<double>(stream);
+    const double charge = read_particle_binary_scalar<double>(stream);
+    const double speed_of_light = read_particle_binary_scalar<double>(stream);
+    const double energy_scale_erg = read_particle_binary_scalar<double>(stream);
+    const double split_ratio = read_particle_binary_scalar<double>(stream);
+    const double minimum_child_weight = read_particle_binary_scalar<double>(stream);
+    (void)species;
+    (void)rest_mass;
+    (void)speed_of_light;
+    (void)energy_scale_erg;
+    (void)minimum_child_weight;
+
+    if (space_dim != reconnection_particle_space_dim) {
+        throw std::runtime_error(
+            "Restart particle snapshot dimensionality does not match reconnection storage.");
+    }
+    if (particle_count > particles.capacity) {
+        std::ostringstream message;
+        message << "Restart particle snapshot stores " << particle_count
+                << " particles, but configured capacity is " << particles.capacity
+                << ". Snapshot capacity was " << snapshot_capacity << '.';
+        throw std::runtime_error(message.str());
+    }
+    if (!restart_metadata_matches(charge, settings.charge)) {
+        throw std::runtime_error(
+            "Restart particle snapshot charge does not match current settings.");
+    }
+    if (!restart_metadata_matches(split_ratio, settings.split_ratio)) {
+        throw std::runtime_error(
+            "Restart particle snapshot split ratio does not match current settings.");
+    }
+
+    auto position_host =
+        Kokkos::create_mirror_view_and_copy(Kokkos::HostSpace{}, particles.position);
+    auto momentum_host =
+        Kokkos::create_mirror_view_and_copy(Kokkos::HostSpace{}, particles.momentum);
+    auto time_host =
+        Kokkos::create_mirror_view_and_copy(Kokkos::HostSpace{}, particles.time);
+    auto step_dt_host =
+        Kokkos::create_mirror_view_and_copy(Kokkos::HostSpace{}, particles.step_dt);
+    auto weight_host =
+        Kokkos::create_mirror_view_and_copy(Kokkos::HostSpace{}, particles.weight);
+    auto mu_host =
+        Kokkos::create_mirror_view_and_copy(Kokkos::HostSpace{}, particles.mu);
+    auto status_host =
+        Kokkos::create_mirror_view_and_copy(Kokkos::HostSpace{}, particles.status);
+    auto split_level_host =
+        Kokkos::create_mirror_view_and_copy(Kokkos::HostSpace{},
+                                            particles.split_level);
+
+    const double restart_time =
+        static_cast<double>(restart_frame) * settings.mhd_dt;
+    for (std::uint64_t index = 0; index < particle_count; ++index) {
+        (void)read_particle_binary_scalar<std::uint64_t>(stream);
+        status_host(index) = read_particle_binary_scalar<std::int32_t>(stream);
+        split_level_host(index) = read_particle_binary_scalar<std::int32_t>(stream);
+        (void)read_particle_binary_scalar<std::int32_t>(stream);
+        for (int dim = 0; dim < reconnection_particle_space_dim; ++dim) {
+            position_host(index, dim) = read_particle_binary_scalar<double>(stream);
+        }
+        for (int dim = 0; dim < reconnection_particle_space_dim; ++dim) {
+            (void)read_particle_binary_scalar<double>(stream);
+        }
+        for (int dim = 0; dim < reconnection_particle_space_dim; ++dim) {
+            (void)read_particle_binary_scalar<double>(stream);
+        }
+        momentum_host(index) = read_particle_binary_scalar<double>(stream);
+        mu_host(index) = read_particle_binary_scalar<double>(stream);
+        weight_host(index) = read_particle_binary_scalar<double>(stream);
+        (void)read_particle_binary_scalar<double>(stream);
+        time_host(index) = restart_time;
+        step_dt_host(index) = settings.dt_min_rel * settings.mhd_dt;
+    }
+
+    Kokkos::deep_copy(particles.position, position_host);
+    Kokkos::deep_copy(particles.momentum, momentum_host);
+    Kokkos::deep_copy(particles.time, time_host);
+    Kokkos::deep_copy(particles.step_dt, step_dt_host);
+    Kokkos::deep_copy(particles.weight, weight_host);
+    Kokkos::deep_copy(particles.mu, mu_host);
+    Kokkos::deep_copy(particles.status, status_host);
+    Kokkos::deep_copy(particles.split_level, split_level_host);
+    particles.count = particle_count;
+}
+
+/**
+ * Write one repository-format particle binary snapshot from the reconnection storage.
+ */
+template <typename ParticleStorageType>
+void write_reconnection_particle_snapshot(const ParticleStorageType& particles,
+                                          const Reconnection2DSettings& settings,
+                                          const int frame) {
+    const std::string path = particle_snapshot_file_path(settings.output_dir, frame);
+    std::ofstream stream(path, std::ios::binary);
+    if (!stream) {
+        throw std::runtime_error("Failed to open particle snapshot output.");
+    }
+
+    const auto position_host =
+        Kokkos::create_mirror_view_and_copy(Kokkos::HostSpace{}, particles.position);
+    const auto momentum_host =
+        Kokkos::create_mirror_view_and_copy(Kokkos::HostSpace{}, particles.momentum);
+    const auto mu_host =
+        Kokkos::create_mirror_view_and_copy(Kokkos::HostSpace{}, particles.mu);
+    const auto weight_host =
+        Kokkos::create_mirror_view_and_copy(Kokkos::HostSpace{}, particles.weight);
+    const auto status_host =
+        Kokkos::create_mirror_view_and_copy(Kokkos::HostSpace{}, particles.status);
+    const auto split_level_host =
+        Kokkos::create_mirror_view_and_copy(Kokkos::HostSpace{},
+                                            particles.split_level);
+
+    constexpr char magic[8] = {'K', 'P', 'T', 'P', 'R', 'T', '\0', '\0'};
+    constexpr std::uint32_t version = 4u;
+    constexpr std::uint32_t endian_marker = 0x01020304u;
+    constexpr double rest_mass = 1.0;
+    constexpr double speed_of_light = 1.0;
+    constexpr double energy_scale_erg = 1.0;
+    constexpr double minimum_child_weight = 0.0;
+    const double initial_kinetic_energy =
+        std::sqrt(1.0 + settings.p0 * settings.p0) - 1.0;
+
+    stream.write(magic, static_cast<std::streamsize>(sizeof(magic)));
+    if (!stream) {
+        throw std::runtime_error("Failed to write particle binary magic.");
+    }
+    write_particle_binary_scalar(stream, version);
+    write_particle_binary_scalar(stream, endian_marker);
+    write_particle_binary_scalar(stream,
+                                 static_cast<std::int32_t>(reconnection_particle_space_dim));
+    write_particle_binary_scalar(stream, reconnection_particle_custom_species);
+    write_particle_binary_scalar(stream, static_cast<std::uint64_t>(particles.count));
+    write_particle_binary_scalar(stream, static_cast<std::uint64_t>(particles.capacity));
+    write_particle_binary_scalar(stream, rest_mass);
+    write_particle_binary_scalar(stream, settings.charge);
+    write_particle_binary_scalar(stream, speed_of_light);
+    write_particle_binary_scalar(stream, energy_scale_erg);
+    write_particle_binary_scalar(stream, settings.split_ratio);
+    write_particle_binary_scalar(stream, minimum_child_weight);
+
+    for (std::uint64_t index = 0; index < particles.count; ++index) {
+        write_particle_binary_scalar(stream, index);
+        write_particle_binary_scalar(stream, status_host(index));
+        write_particle_binary_scalar(stream, split_level_host(index));
+        write_particle_binary_scalar(stream, static_cast<std::int32_t>(0));
+        for (int dim = 0; dim < reconnection_particle_space_dim; ++dim) {
+            write_particle_binary_scalar(stream, position_host(index, dim));
+        }
+        for (int dim = 0; dim < reconnection_particle_space_dim; ++dim) {
+            write_particle_binary_scalar(stream, position_host(index, dim));
+        }
+        for (int dim = 0; dim < reconnection_particle_space_dim; ++dim) {
+            write_particle_binary_scalar(stream, position_host(index, dim));
+        }
+        write_particle_binary_scalar(stream, momentum_host(index));
+        write_particle_binary_scalar(stream, mu_host(index));
+        write_particle_binary_scalar(stream, weight_host(index));
+        write_particle_binary_scalar(stream, initial_kinetic_energy);
+    }
+}
+
+/**
  * Write the summary CSV header.
  */
 void write_summary_header(std::ofstream& stream) {
@@ -1881,6 +2206,10 @@ int run_transport_loop(const Reconnection2DSettings& settings,
            << "  transport=" << transport_model_name(settings.transport_model) << '\n'
            << "  field_dir=" << settings.field_dir << '\n'
            << "  output_dir=" << settings.output_dir << '\n'
+           << "  restart_particle_snapshot="
+           << (settings.restart_enabled()
+                   ? settings.restart_particle_snapshot_path
+                   : std::string("disabled")) << '\n'
            << "  frames=" << settings.start_frame << ".."
            << settings.end_frame << " (" << settings.interval_count()
            << " intervals)\n"
@@ -1890,13 +2219,26 @@ int run_transport_loop(const Reconnection2DSettings& settings,
            << settings.rank_scale << ")\n"
            << "  capacity=" << settings.particle_capacity << '\n'
            << "  dt_out=" << settings.mhd_dt << '\n'
-           << "  kpara0=" << settings.kpara0
+           << "  histogram_interval=" << settings.histogram_interval << '\n'
+           << "  particle_snapshot_interval="
+           << settings.particle_snapshot_interval << '\n'
+           << "  walltime_limit_s=";
+    if (settings.walltime_limit_enabled()) {
+        header << settings.walltime_limit_seconds
+               << " walltime_reserve_s=" << settings.walltime_reserve_seconds
+               << " walltime_stop_s=" << settings.walltime_stop_seconds() << '\n';
+    } else {
+        header << "disabled\n";
+    }
+    header << "  kpara0=" << settings.kpara0
            << " kperp/kpara=" << settings.kperp_over_kpara << '\n'
            << "  particle_v0=" << settings.particle_v0
            << " duu0=" << settings.duu0 << '\n';
     write_log_block(log_stream, header.str());
 
     const auto run_start = wall_time_now();
+    bool stopped_by_walltime = false;
+    int last_completed_frame = settings.start_frame;
     for (int frame = settings.start_frame; frame < settings.end_frame; ++frame) {
         const auto frame_start = wall_time_now();
         FrameTiming timing;
@@ -1940,13 +2282,19 @@ int run_transport_loop(const Reconnection2DSettings& settings,
         timing.skipped_split_capacity = split_counts.second;
         timing.split_seconds = elapsed_seconds_since(split_start);
 
+        const double total_frame_seconds = elapsed_seconds_since(frame_start);
+        const double total_elapsed_seconds = elapsed_seconds_since(run_start);
+        const bool reached_walltime_limit =
+            settings.walltime_limit_enabled() &&
+            total_elapsed_seconds >= settings.walltime_stop_seconds();
+        const bool final_frame = frame + 1 == settings.end_frame;
+        const bool run_is_finishing = final_frame || reached_walltime_limit;
+
         const bool should_diagnose =
             ((frame + 1 - settings.start_frame) % settings.diagnostic_interval) == 0 ||
-            frame + 1 == settings.end_frame;
+            run_is_finishing;
         if (should_diagnose) {
             const ParticleSummary summary = summarize_particles(particles);
-            const double total_frame_seconds = elapsed_seconds_since(frame_start);
-            const double total_elapsed_seconds = elapsed_seconds_since(run_start);
             write_summary_row(summary_stream, frame + 1,
                               static_cast<double>(frame + 1) * settings.mhd_dt,
                               summary, timing, total_frame_seconds,
@@ -1969,15 +2317,49 @@ int run_transport_loop(const Reconnection2DSettings& settings,
         const bool should_write_histogram =
             (settings.histogram_interval > 0 &&
              ((frame + 1 - settings.start_frame) % settings.histogram_interval) == 0) ||
-            frame + 1 == settings.end_frame;
+            run_is_finishing;
         if (should_write_histogram) {
             write_momentum_histogram(particles, settings, frame + 1);
+        }
+
+        const bool should_write_particle_snapshot =
+            settings.particle_snapshot_interval > 0 &&
+            (((frame + 1 - settings.start_frame) %
+              settings.particle_snapshot_interval) == 0 ||
+             run_is_finishing);
+        if (should_write_particle_snapshot) {
+            const auto snapshot_start = wall_time_now();
+            write_reconnection_particle_snapshot(particles, settings, frame + 1);
+            std::ostringstream snapshot_log;
+            snapshot_log << "wrote particle snapshot "
+                         << particle_snapshot_file_path(settings.output_dir, frame + 1)
+                         << " in " << elapsed_seconds_since(snapshot_start) << " s";
+            write_log_line(log_stream, snapshot_log.str());
+        }
+
+        last_completed_frame = frame + 1;
+        if (reached_walltime_limit) {
+            stopped_by_walltime = true;
+            std::ostringstream stop_log;
+            stop_log << "Reached walltime stop after frame " << last_completed_frame
+                     << " elapsed_s=" << total_elapsed_seconds
+                     << " stop_s=" << settings.walltime_stop_seconds()
+                     << " limit_s=" << settings.walltime_limit_seconds
+                     << " reserve_s=" << settings.walltime_reserve_seconds;
+            write_log_line(log_stream, stop_log.str());
+            break;
         }
     }
 
     std::ostringstream footer;
-    footer << "Finished in " << elapsed_seconds_since(run_start)
-           << " s. Summary: " << settings.output_dir << "/summary.csv\n";
+    if (stopped_by_walltime) {
+        footer << "Stopped by walltime after frame " << last_completed_frame
+               << " in " << elapsed_seconds_since(run_start)
+               << " s. Summary: " << settings.output_dir << "/summary.csv\n";
+    } else {
+        footer << "Finished in " << elapsed_seconds_since(run_start)
+               << " s. Summary: " << settings.output_dir << "/summary.csv\n";
+    }
     write_log_block(log_stream, footer.str());
     return 0;
 }
@@ -2002,6 +2384,8 @@ std::string require_option_value(const int argc,
 Reconnection2DSettings parse_settings(const int argc, char** argv) {
     Reconnection2DSettings settings;
     std::string profile_name = settings.profile_name;
+    bool start_frame_was_set = false;
+    int requested_frame_count = -1;
 
     for (int i = 1; i < argc; ++i) {
         const std::string arg(argv[i]);
@@ -2025,6 +2409,8 @@ Reconnection2DSettings parse_settings(const int argc, char** argv) {
                 << "  --transport MODEL             parker(default) or focused\n"
                 << "  --focused-transport           shorthand for --transport focused\n"
                 << "  --parker-transport            shorthand for --transport parker\n"
+                << "  --restart-particle-snapshot PATH\n"
+                << "                                load particles_XXXXX.bin and continue from frame XXXXX\n"
                 << "  --field-dir PATH              override profile field directory\n"
                 << "  --output-dir PATH             override profile output directory\n"
                 << "  --start-frame N               default 0\n"
@@ -2037,7 +2423,13 @@ Reconnection2DSettings parse_settings(const int argc, char** argv) {
                 << "  --dt-out X                    default 0.1\n"
                 << "  --diagnostic-interval N       profile default is usually 1\n"
                 << "  --histogram-interval N        0 writes final histogram only\n"
+                << "  --particle-snapshot-interval N\n"
+                << "                                0 disables particle binary snapshots\n"
                 << "  --max-steps-per-interval N    default 200000\n"
+                << "  --walltime-hours X            stop after X hours, disabled at 0\n"
+                << "  --walltime-seconds X          stop after X seconds, disabled at 0\n"
+                << "  --walltime-reserve-minutes X  subtract X minutes from the stop limit\n"
+                << "  --walltime-reserve-seconds X  subtract X seconds from the stop limit\n"
                 << "  --particle-v0 X               focused initial speed at p0\n"
                 << "  --duu0 X                      focused D_mumu normalization\n"
                 << "  --no-split                    disable Fortran-style particle splitting\n"
@@ -2052,18 +2444,25 @@ Reconnection2DSettings parse_settings(const int argc, char** argv) {
             settings.transport_model = TransportModel::Focused;
         } else if (arg == "--parker-transport") {
             settings.transport_model = TransportModel::Parker;
+        } else if (arg == "--restart-particle-snapshot") {
+            settings.restart_particle_snapshot_path =
+                require_option_value(argc, argv, i, arg);
         } else if (arg == "--field-dir") {
             settings.field_dir = require_option_value(argc, argv, i, arg);
         } else if (arg == "--output-dir") {
             settings.output_dir = require_option_value(argc, argv, i, arg);
         } else if (arg == "--start-frame") {
             settings.start_frame = std::stoi(require_option_value(argc, argv, i, arg));
+            start_frame_was_set = true;
+            if (requested_frame_count > 0) {
+                settings.end_frame = settings.start_frame + requested_frame_count;
+            }
         } else if (arg == "--end-frame") {
             settings.end_frame = std::stoi(require_option_value(argc, argv, i, arg));
         } else if (arg == "--frames") {
-            settings.end_frame =
-                settings.start_frame +
+            requested_frame_count =
                 std::stoi(require_option_value(argc, argv, i, arg));
+            settings.end_frame = settings.start_frame + requested_frame_count;
         } else if (arg == "--particles-per-frame") {
             settings.particles_per_frame =
                 std::stoull(require_option_value(argc, argv, i, arg));
@@ -2083,9 +2482,24 @@ Reconnection2DSettings parse_settings(const int argc, char** argv) {
         } else if (arg == "--histogram-interval") {
             settings.histogram_interval =
                 std::stoi(require_option_value(argc, argv, i, arg));
+        } else if (arg == "--particle-snapshot-interval") {
+            settings.particle_snapshot_interval =
+                std::stoi(require_option_value(argc, argv, i, arg));
         } else if (arg == "--max-steps-per-interval") {
             settings.max_particle_steps_per_interval =
                 std::stoi(require_option_value(argc, argv, i, arg));
+        } else if (arg == "--walltime-hours") {
+            settings.walltime_limit_seconds =
+                3600.0 * std::stod(require_option_value(argc, argv, i, arg));
+        } else if (arg == "--walltime-seconds") {
+            settings.walltime_limit_seconds =
+                std::stod(require_option_value(argc, argv, i, arg));
+        } else if (arg == "--walltime-reserve-minutes") {
+            settings.walltime_reserve_seconds =
+                60.0 * std::stod(require_option_value(argc, argv, i, arg));
+        } else if (arg == "--walltime-reserve-seconds") {
+            settings.walltime_reserve_seconds =
+                std::stod(require_option_value(argc, argv, i, arg));
         } else if (arg == "--particle-v0") {
             settings.particle_v0 =
                 std::stod(require_option_value(argc, argv, i, arg));
@@ -2097,6 +2511,24 @@ Reconnection2DSettings parse_settings(const int argc, char** argv) {
             settings.time_interpolation = false;
         } else {
             throw std::runtime_error("Unknown option: " + arg);
+        }
+    }
+    if (settings.restart_enabled()) {
+        const int restart_frame =
+            infer_particle_snapshot_frame(settings.restart_particle_snapshot_path);
+        if (restart_frame < 0) {
+            throw std::runtime_error(
+                "Cannot infer restart frame from particle snapshot name; expected particles_XXXXX.bin.");
+        }
+        if (start_frame_was_set && settings.start_frame != restart_frame) {
+            throw std::runtime_error(
+                "Restart particle snapshot frame does not match --start-frame.");
+        }
+        if (!start_frame_was_set) {
+            settings.start_frame = restart_frame;
+            if (requested_frame_count > 0) {
+                settings.end_frame = settings.start_frame + requested_frame_count;
+            }
         }
     }
     settings.validate();
@@ -2111,18 +2543,49 @@ int run(const Reconnection2DSettings& settings) {
     using random_manager_type = RandomManager<>;
 
     std::filesystem::create_directories(settings.output_dir);
-    std::ofstream summary_stream(settings.output_dir + "/summary.csv");
+    const std::string summary_path = settings.output_dir + "/summary.csv";
+    const std::string log_path = settings.output_dir + "/run.log";
+    const bool append_outputs =
+        settings.restart_enabled() && std::filesystem::exists(summary_path);
+    const bool summary_has_content =
+        append_outputs && std::filesystem::file_size(summary_path) > 0;
+    std::ofstream summary_stream(
+        summary_path,
+        append_outputs ? (std::ios::out | std::ios::app) : std::ios::out);
     if (!summary_stream) {
         throw std::runtime_error("Failed to open summary output.");
     }
-    write_summary_header(summary_stream);
-    std::ofstream log_stream(settings.output_dir + "/run.log");
+    if (!summary_has_content) {
+        write_summary_header(summary_stream);
+    }
+    std::ofstream log_stream(
+        log_path,
+        settings.restart_enabled() ? (std::ios::out | std::ios::app) : std::ios::out);
     if (!log_stream) {
         throw std::runtime_error("Failed to open run log output.");
     }
 
-    random_manager_type random_manager(settings.seed);
+    const std::uint64_t effective_seed =
+        settings.restart_enabled()
+            ? settings.seed +
+                  0x9e3779b97f4a7c15ull *
+                      static_cast<std::uint64_t>(settings.start_frame + 1)
+            : settings.seed;
+    random_manager_type random_manager(effective_seed);
     particle_storage_type particles(settings.particle_capacity);
+    if (settings.restart_enabled()) {
+        load_reconnection_particle_snapshot(particles, settings,
+                                            settings.start_frame);
+        std::ostringstream restart_log;
+        restart_log << "Restarted from particle snapshot "
+                    << settings.restart_particle_snapshot_path
+                    << " at frame " << settings.start_frame
+                    << " loaded_particles=" << particles.count
+                    << " configured_capacity=" << particles.capacity
+                    << " effective_seed=" << effective_seed
+                    << " (RNG state is reseeded, not restored)";
+        write_log_line(log_stream, restart_log.str());
+    }
 
     auto read_start = wall_time_now();
     if (settings.transport_model == TransportModel::Parker) {

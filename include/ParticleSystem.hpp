@@ -1004,6 +1004,146 @@ public:
         }
     }
 
+    /**
+     * Build a particle system by reading a version-4 particle binary snapshot.
+     */
+    static ParticleSystem read_binary_snapshot(
+        const std::string& file_path,
+        const size_type minimum_capacity = 0,
+        const char* label = "particles_restart") {
+        std::ifstream stream(file_path, std::ios::binary);
+        if (!stream) {
+            throw std::runtime_error(
+                "ParticleSystem: failed to open binary particle input file.");
+        }
+
+        const auto expected_magic = particle_binary_magic();
+        std::array<char, 8> magic{};
+        stream.read(magic.data(), static_cast<std::streamsize>(magic.size()));
+        if (!stream || magic != expected_magic) {
+            throw std::runtime_error(
+                "ParticleSystem: unrecognized particle binary magic.");
+        }
+
+        const auto version = read_binary_scalar<std::uint32_t>(stream);
+        const auto endian_marker = read_binary_scalar<std::uint32_t>(stream);
+        if (version != particle_binary_version()) {
+            throw std::runtime_error(
+                "ParticleSystem: only particle binary version 4 is restart-readable.");
+        }
+        if (endian_marker != particle_binary_endian_marker()) {
+            throw std::runtime_error(
+                "ParticleSystem: particle binary endian does not match this host.");
+        }
+
+        const auto file_space_dim = read_binary_scalar<std::int32_t>(stream);
+        const auto file_species = read_binary_scalar<std::int32_t>(stream);
+        const auto file_count = read_binary_scalar<std::uint64_t>(stream);
+        const auto file_capacity = read_binary_scalar<std::uint64_t>(stream);
+        if (file_space_dim != SpaceDim) {
+            throw std::runtime_error(
+                "ParticleSystem: snapshot dimension does not match ParticleSystem.");
+        }
+        if (file_species < static_cast<std::int32_t>(ParticleSpecies::Proton) ||
+            file_species > static_cast<std::int32_t>(ParticleSpecies::Custom)) {
+            throw std::runtime_error(
+                "ParticleSystem: snapshot contains an invalid particle species.");
+        }
+
+        ParticleProperties snapshot_properties;
+        snapshot_properties.species =
+            static_cast<ParticleSpecies>(file_species);
+        snapshot_properties.rest_mass = read_binary_scalar<double>(stream);
+        snapshot_properties.charge = read_binary_scalar<double>(stream);
+        snapshot_properties.speed_of_light = read_binary_scalar<double>(stream);
+        snapshot_properties.energy_scale_erg = read_binary_scalar<double>(stream);
+        snapshot_properties.validate();
+
+        ParticleSplittingPolicy snapshot_policy;
+        snapshot_policy.energy_split_ratio = read_binary_scalar<double>(stream);
+        snapshot_policy.minimum_child_weight = read_binary_scalar<double>(stream);
+        snapshot_policy.validate();
+
+        const size_type restart_count = static_cast<size_type>(file_count);
+        const size_type restart_capacity = static_cast<size_type>(
+            std::max<std::uint64_t>(
+                file_count,
+                std::max<std::uint64_t>(
+                    file_capacity,
+                    static_cast<std::uint64_t>(minimum_capacity))));
+        ParticleSystem particles(restart_count, restart_capacity,
+                                 snapshot_properties, snapshot_policy, label);
+
+        auto id_host =
+            Kokkos::create_mirror_view_and_copy(Kokkos::HostSpace{},
+                                                particles.particle_id);
+        auto position_host =
+            Kokkos::create_mirror_view_and_copy(Kokkos::HostSpace{},
+                                                particles.position);
+        auto previous_position_host =
+            Kokkos::create_mirror_view_and_copy(Kokkos::HostSpace{},
+                                                particles.previous_position);
+        auto previous_step_position_host =
+            Kokkos::create_mirror_view_and_copy(Kokkos::HostSpace{},
+                                                particles.previous_step_position);
+        auto momentum_host =
+            Kokkos::create_mirror_view_and_copy(Kokkos::HostSpace{},
+                                                particles.momentum);
+        auto mu_host =
+            Kokkos::create_mirror_view_and_copy(Kokkos::HostSpace{}, particles.mu);
+        auto weight_host =
+            Kokkos::create_mirror_view_and_copy(Kokkos::HostSpace{},
+                                                particles.weight);
+        auto initial_energy_host =
+            Kokkos::create_mirror_view_and_copy(Kokkos::HostSpace{},
+                                                particles.initial_kinetic_energy);
+        auto status_host =
+            Kokkos::create_mirror_view_and_copy(Kokkos::HostSpace{},
+                                                particles.status);
+        auto split_level_host =
+            Kokkos::create_mirror_view_and_copy(Kokkos::HostSpace{},
+                                                particles.split_level);
+        auto sort_key_host =
+            Kokkos::create_mirror_view_and_copy(Kokkos::HostSpace{},
+                                                particles.sort_key);
+
+        for (size_type index = 0; index < restart_count; ++index) {
+            id_host(index) = read_binary_scalar<std::uint64_t>(stream);
+            status_host(index) = read_binary_scalar<std::int32_t>(stream);
+            split_level_host(index) = read_binary_scalar<std::int32_t>(stream);
+            sort_key_host(index) = read_binary_scalar<std::int32_t>(stream);
+            for (int dim = 0; dim < SpaceDim; ++dim) {
+                position_host(index, dim) = read_binary_scalar<double>(stream);
+            }
+            for (int dim = 0; dim < SpaceDim; ++dim) {
+                previous_position_host(index, dim) =
+                    read_binary_scalar<double>(stream);
+            }
+            for (int dim = 0; dim < SpaceDim; ++dim) {
+                previous_step_position_host(index, dim) =
+                    read_binary_scalar<double>(stream);
+            }
+            momentum_host(index) = read_binary_scalar<double>(stream);
+            mu_host(index) = read_binary_scalar<double>(stream);
+            weight_host(index) = read_binary_scalar<double>(stream);
+            initial_energy_host(index) = read_binary_scalar<double>(stream);
+        }
+
+        Kokkos::deep_copy(particles.particle_id, id_host);
+        Kokkos::deep_copy(particles.position, position_host);
+        Kokkos::deep_copy(particles.previous_position, previous_position_host);
+        Kokkos::deep_copy(particles.previous_step_position,
+                          previous_step_position_host);
+        Kokkos::deep_copy(particles.momentum, momentum_host);
+        Kokkos::deep_copy(particles.mu, mu_host);
+        Kokkos::deep_copy(particles.weight, weight_host);
+        Kokkos::deep_copy(particles.initial_kinetic_energy, initial_energy_host);
+        Kokkos::deep_copy(particles.status, status_host);
+        Kokkos::deep_copy(particles.split_level, split_level_host);
+        Kokkos::deep_copy(particles.sort_key, sort_key_host);
+        return particles;
+    }
+
 private:
     /**
      * Create a Kokkos label by appending a suffix.
@@ -1082,5 +1222,18 @@ private:
         if (!stream) {
             throw std::runtime_error("ParticleSystem: failed to write binary scalar.");
         }
+    }
+
+    /**
+     * Read a trivially copyable scalar from a particle binary stream.
+     */
+    template <typename T>
+    static T read_binary_scalar(std::ifstream& stream) {
+        T value{};
+        stream.read(reinterpret_cast<char*>(&value), sizeof(T));
+        if (!stream) {
+            throw std::runtime_error("ParticleSystem: failed to read binary scalar.");
+        }
+        return value;
     }
 };

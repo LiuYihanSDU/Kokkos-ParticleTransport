@@ -167,6 +167,20 @@ Focused 输运使用：
 --transport focused
 ```
 
+从已完成帧的粒子快照继续运行：
+
+```bash
+cmake-build-benchmark-cpu/kokkos_particle_transport_app \
+  --profile fortran-global \
+  --transport parker \
+  --restart-particle-snapshot benchmark_runs/kokkos_cpu/particles_00100.bin \
+  --field-dir benchmark_runs/compact_field \
+  --output-dir benchmark_runs/kokkos_cpu \
+  --end-frame 200
+```
+
+如果快照文件名符合 `particles_XXXXX.bin`，程序会自动将 `--start-frame` 设为 `XXXXX`；脚本接口可使用 `KPT_RESTART_PARTICLE_SNAPSHOT=/path/to/particles_00100.bin`。
+
 ## 运行时间控制
 
 Kokkos 驱动可以在完成某一帧后干净停止：
@@ -301,8 +315,8 @@ $$R_d(p)=\sqrt{\left(a_1\frac{p_0}{p}\right)^2+\left(a_2\frac{p_0^2}{p^2}\right)
 
 ## 当前限制
 
-- 重联标定驱动不是通用生产级重启系统。
-- Kokkos 墙钟时间停止会在完成帧后写出最终诊断，但不会序列化可恢复的 RNG/检查点状态。
+- 重联标定驱动支持从 `particles_XXXXX.bin` 进行帧边界粒子状态重启，但不是通用生产级 checkpoint 系统。
+- Kokkos 墙钟时间停止会在完成帧后写出最终诊断和可选粒子快照；重启会恢复粒子状态，但不会恢复可逐位复现的 RNG 状态。
 - 当前化简的重联粒子快照保存标量动量大小，不保存完整动量方向。
 - Parker 辐射重建将存储的 `mu` 视为不可用；Focused 输运分支才携带物理俯仰角信息。
 - 辐射阈值所需的绝对粒子能量标定仍取决于具体运行选择的输运量到 CGS 单位归一化。

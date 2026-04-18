@@ -71,7 +71,21 @@ CPU_CXX_FLAGS="${KPT_CPU_CXX_FLAGS:--march=native}"
 
 START_FRAME="${KPT_START_FRAME:-0}"
 END_FRAME="${KPT_END_FRAME:-200}"
+RESTART_PARTICLE_SNAPSHOT="${KPT_RESTART_PARTICLE_SNAPSHOT:-${KPT_KOKKOS_RESTART_PARTICLE_SNAPSHOT:-}}"
+if [[ -n "${RESTART_PARTICLE_SNAPSHOT}" ]]; then
+    RESTART_PARTICLE_SNAPSHOT="$(absolute_path "${RESTART_PARTICLE_SNAPSHOT}")"
+    if [[ -z "${KPT_START_FRAME:-}" ]]; then
+        restart_name="$(basename "${RESTART_PARTICLE_SNAPSHOT}")"
+        if [[ "${restart_name}" =~ ^particles_([0-9]+)\.bin$ ]]; then
+            START_FRAME="$((10#${BASH_REMATCH[1]}))"
+        else
+            echo "Cannot infer KPT_START_FRAME from ${restart_name}; set KPT_START_FRAME explicitly." >&2
+            exit 2
+        fi
+    fi
+fi
 HISTOGRAM_INTERVAL="${KPT_HISTOGRAM_INTERVAL:-10}"
+PARTICLE_SNAPSHOT_INTERVAL="${KPT_PARTICLE_SNAPSHOT_INTERVAL:-${HISTOGRAM_INTERVAL}}"
 MPI_SIZE="${KPT_MPI_SIZE:-${CPU_CORE_COUNT}}"
 PARTICLES_PER_RANK="${KPT_PARTICLES_PER_RANK:-1600}"
 FORTRAN_PARTICLE_CAPACITY="${KPT_FORTRAN_PARTICLE_CAPACITY:-1000000}"
@@ -81,6 +95,10 @@ KOKKOS_GPU_HOST_THREADS="${KPT_KOKKOS_GPU_HOST_THREADS:-1}"
 KOKKOS_CPU_THREADS="${KPT_KOKKOS_CPU_THREADS:-${CPU_CORE_COUNT}}"
 PARTICLE_V0="${KPT_PARTICLE_V0:-17.20195}"
 DUU0="${KPT_DUU0:-5578.445}"
+COMMON_WALLTIME_HOURS="${KPT_WALLTIME_HOURS:-}"
+FORTRAN_WALLTIME_HOURS="${KPT_FORTRAN_WALLTIME_HOURS:-${COMMON_WALLTIME_HOURS:-12.0}}"
+KOKKOS_WALLTIME_HOURS="${KPT_KOKKOS_WALLTIME_HOURS:-${COMMON_WALLTIME_HOURS}}"
+KOKKOS_WALLTIME_RESERVE_MINUTES="${KPT_KOKKOS_WALLTIME_RESERVE_MINUTES:-${KPT_WALLTIME_RESERVE_MINUTES:-30}}"
 POSTPROCESS_PYTHON="${KPT_POSTPROCESS_PYTHON:-}"
 SKIP_POSTPROCESS="${KPT_SKIP_POSTPROCESS:-0}"
 
@@ -115,7 +133,9 @@ run_logged_in_dir() {
 
 prepare_case_dir() {
     local case_dir="$1"
-    rm -rf "${case_dir}"
+    if [[ -z "${RESTART_PARTICLE_SNAPSHOT}" ]]; then
+        rm -rf "${case_dir}"
+    fi
     mkdir -p "${case_dir}/restart"
 }
 
@@ -252,6 +272,8 @@ kokkos_cpu_dir=${KOKKOS_CPU_DIR}
 start_frame=${START_FRAME}
 end_frame=${END_FRAME}
 histogram_interval=${HISTOGRAM_INTERVAL}
+particle_snapshot_interval=${PARTICLE_SNAPSHOT_INTERVAL}
+restart_particle_snapshot=${RESTART_PARTICLE_SNAPSHOT}
 cpu_core_count=${CPU_CORE_COUNT}
 build_jobs=${BUILD_JOBS}
 cpu_cxx_flags=${CPU_CXX_FLAGS}
@@ -272,6 +294,10 @@ kokkos_gpu_host_threads=${KOKKOS_GPU_HOST_THREADS}
 kokkos_cpu_threads=${KOKKOS_CPU_THREADS}
 particle_v0=${PARTICLE_V0}
 duu0=${DUU0}
+common_walltime_hours=${COMMON_WALLTIME_HOURS}
+fortran_walltime_hours=${FORTRAN_WALLTIME_HOURS}
+kokkos_walltime_hours=${KOKKOS_WALLTIME_HOURS}
+kokkos_walltime_reserve_minutes=${KOKKOS_WALLTIME_RESERVE_MINUTES}
 fortran_exec=${FORTRAN_EXEC}
 fortran_mhd_dir=${FORTRAN_MHD_DIR}
 cpu_build_dir=${CPU_BUILD_DIR}
@@ -296,7 +322,7 @@ run_fortran_case() {
 
     local output_dir="${FORTRAN_DIR}/"
     local args=(
-        -qh 12.0 -rf .false.
+        -qh "${FORTRAN_WALLTIME_HOURS}" -rf .false.
         -ft "${FORTRAN_FOCUSED_TRANSPORT}" -nl .false. -kk 6.770161725403334
         -pv "${PARTICLE_V0}" -sm 1
         -dm "${FORTRAN_MHD_DIR}" -mc mhd_config.dat -np "${PARTICLES_PER_RANK}"
@@ -339,6 +365,20 @@ run_kokkos_case() {
     local case_dir="$2"
     local host_threads="$3"
     local log_file="${case_dir}/console.log"
+    local walltime_args=()
+    local restart_args=()
+
+    if [[ -n "${KOKKOS_WALLTIME_HOURS}" &&
+          "${KOKKOS_WALLTIME_HOURS}" != "0" &&
+          "${KOKKOS_WALLTIME_HOURS}" != "0.0" ]]; then
+        walltime_args=(
+            --walltime-hours "${KOKKOS_WALLTIME_HOURS}"
+            --walltime-reserve-minutes "${KOKKOS_WALLTIME_RESERVE_MINUTES}"
+        )
+    fi
+    if [[ -n "${RESTART_PARTICLE_SNAPSHOT}" ]]; then
+        restart_args=(--restart-particle-snapshot "${RESTART_PARTICLE_SNAPSHOT}")
+    fi
 
     prepare_case_dir "${case_dir}"
     run_logged "${log_file}" \
@@ -347,6 +387,7 @@ run_kokkos_case() {
         "${TIME_CMD}" -p "${app}" \
         --profile fortran-global \
         --transport "${TRANSPORT_MODEL}" \
+        "${restart_args[@]}" \
         --field-dir "${FIELD_DIR}" \
         --output-dir "${case_dir}" \
         --start-frame "${START_FRAME}" \
@@ -357,7 +398,9 @@ run_kokkos_case() {
         --particle-v0 "${PARTICLE_V0}" \
         --duu0 "${DUU0}" \
         --diagnostic-interval 1 \
-        --histogram-interval "${HISTOGRAM_INTERVAL}"
+        --histogram-interval "${HISTOGRAM_INTERVAL}" \
+        --particle-snapshot-interval "${PARTICLE_SNAPSHOT_INTERVAL}" \
+        "${walltime_args[@]}"
 }
 
 select_postprocess_python() {

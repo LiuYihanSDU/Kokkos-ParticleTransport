@@ -1,0 +1,7 @@
+      n_nth;    1.00    ;   0.100E-03;   0.200E+04;   1d7 cm^-3                    ;Non-thermal density
+          B;    4.00    ;   0.100E-01;    30.0    ;       1d2G                          ;Magnetic field
+      theta;    60.0    ;    22.0    ;    87.0    ;         deg                     ;Viewing angle to B
+       n_th;    10.0    ;   0.100E-01;    600.    ;   1d9 cm^-3                        ;Thermal density
+      Delta;    4.50    ;    1.70    ;    15.0    ;          No                     ;PLW spectral index
+      E_max;    5.00    ;   0.100    ;    10.0    ;         MeV                      ;Max energy in PLW
+        T_e;    5.00    ;    1.50    ;    60.0    ;          MK                            ;Temperature

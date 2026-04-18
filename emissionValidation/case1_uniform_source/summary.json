@@ -1,0 +1,95 @@
+{
+  "case_name": "case1_uniform_source",
+  "global_power_law_index": 4.245267313420529,
+  "global_power_law_r_squared": 0.999237808103187,
+  "global_power_law_fit_accepted": 1,
+  "accepted_local_fits": 384,
+  "macro_particle_electron_count": 1e+27,
+  "integrated_spectrum_rms_relative_error": 0.21283200366561933,
+  "nonthermal_density_peak_theory_cm3": 80000000.0,
+  "nonthermal_density_peak_reconstructed_cm3": 80479174.35093997,
+  "parameter_metrics": {
+    "nonthermal_density_cm3": {
+      "mae": 121447.87256449484,
+      "rmse": 153024.24743767284,
+      "relative_mae": 0.0015180984070561855,
+      "relative_rmse": 0.0019128030929709103,
+      "peak_theory": 80000000.0,
+      "peak_reconstructed": 80479174.35093997,
+      "peak_relative_error": 0.005989679386749678
+    },
+    "power_law_index": {
+      "mae": 0.1162680805539904,
+      "rmse": 0.1579501362868629,
+      "relative_mae": 0.027682876322378664,
+      "relative_rmse": 0.037607175306395936,
+      "peak_theory": 4.2,
+      "peak_reconstructed": 4.440634935285422,
+      "peak_relative_error": 0.05729403221081466
+    }
+  },
+  "morphology_metrics": {
+    "0.10GHz": {
+      "relative_rmse": 0.0,
+      "relative_mae": 0.0,
+      "centroid_offset_pixels": 0.0,
+      "peak_value_relative_error": 0.0,
+      "plane_flux_relative_error": 0.0
+    },
+    "0.30GHz": {
+      "relative_rmse": 0.0,
+      "relative_mae": 0.0,
+      "centroid_offset_pixels": 0.0,
+      "peak_value_relative_error": 0.0,
+      "plane_flux_relative_error": 0.0
+    },
+    "1.00GHz": {
+      "relative_rmse": 0.08267918222707137,
+      "relative_mae": 0.0576072182844723,
+      "centroid_offset_pixels": 0.031729434474499905,
+      "peak_value_relative_error": 0.37096678260146965,
+      "plane_flux_relative_error": 0.04276910906751257
+    },
+    "3.00GHz": {
+      "relative_rmse": 0.14576610013485997,
+      "relative_mae": 0.10210282463514664,
+      "centroid_offset_pixels": 0.054387569808162735,
+      "peak_value_relative_error": 0.6398978120846438,
+      "plane_flux_relative_error": 0.07562672911876057
+    },
+    "6.00GHz": {
+      "relative_rmse": 0.46124634906474693,
+      "relative_mae": 0.3103567749312762,
+      "centroid_offset_pixels": 0.14796504642461822,
+      "peak_value_relative_error": 2.1596945104016827,
+      "plane_flux_relative_error": 0.2406010221697602
+    },
+    "10.00GHz": {
+      "relative_rmse": 0.9385749044694625,
+      "relative_mae": 0.5512604671284835,
+      "centroid_offset_pixels": 0.23721271344307812,
+      "peak_value_relative_error": 5.977812730228774,
+      "plane_flux_relative_error": 0.45691649868335693
+    }
+  },
+  "spectrum_band_metrics": {
+    "low_0.03_0.3GHz": {
+      "rms_relative_error": 0.0,
+      "integrated_flux_theory_sfu": 0.0,
+      "integrated_flux_reconstructed_sfu": 0.0,
+      "integrated_flux_relative_error": 0.0
+    },
+    "mid_0.3_3GHz": {
+      "rms_relative_error": 0.04745652801947887,
+      "integrated_flux_theory_sfu": 17.932870058813954,
+      "integrated_flux_reconstructed_sfu": 18.96664125124247,
+      "integrated_flux_relative_error": 0.057646722975077926
+    },
+    "high_3_10GHz": {
+      "rms_relative_error": 0.2720190341491344,
+      "integrated_flux_theory_sfu": 1002.6498314699943,
+      "integrated_flux_reconstructed_sfu": 1210.369315309626,
+      "integrated_flux_relative_error": 0.20717051688433663
+    }
+  }
+}

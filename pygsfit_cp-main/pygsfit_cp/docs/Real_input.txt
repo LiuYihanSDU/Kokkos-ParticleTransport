@@ -1,0 +1,6 @@
+   SIMPLEX Step;   0.170       ;   ;user                           ;SIMPLEX Step
+    SIMPLEX EPS;   0.100E-05   ;   ;user                       ;SIMPLEX accuracy
+ Flux Threshold;    1.00        ;sfu*GHz     ; user ;Flux threshold to be fitted
+     Pixel Area;    4.00       ;arcsec^2    ;data ;Number of pixels along y axes
+      LOS Depth;    8.00        ;arcsec               ;user ;LOS depth (assumed)
+           ;   0.150E-01  ;MeV ;user            ;Min energy in PLW (assumed)

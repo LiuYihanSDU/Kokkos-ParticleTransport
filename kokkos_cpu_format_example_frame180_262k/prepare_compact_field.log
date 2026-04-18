@@ -1,0 +1,4 @@
+Converting Fortran MHD frames 180..181 to "/home/liuyh/CLionProjects/Kokkos-particleTransport/benchmark_runs/kokkos_cpu_format_example_frame180_262k/compact_field"
+  nx=1024 ny=1024 xmin=0 xmax=2 ymin=0 ymax=2
+frame 180 -> "/home/liuyh/CLionProjects/Kokkos-particleTransport/benchmark_runs/kokkos_cpu_format_example_frame180_262k/compact_field/field00180.bin"
+frame 181 -> "/home/liuyh/CLionProjects/Kokkos-particleTransport/benchmark_runs/kokkos_cpu_format_example_frame180_262k/compact_field/field00181.bin"

@@ -1,0 +1,16 @@
+Reconnection 2D calibration
+  profile=fortran-global
+  transport=parker
+  field_dir=/home/liuyh/CLionProjects/Kokkos-particleTransport/benchmark_runs/kokkos_cpu_format_example_frame180_262k/compact_field
+  output_dir=/home/liuyh/CLionProjects/Kokkos-particleTransport/benchmark_runs/kokkos_cpu_format_example_frame180_262k/kokkos_cpu
+  frames=180..181 (1 intervals)
+  particles_per_frame=262144 (262144 * rank_scale 1)
+  capacity=1048576
+  dt_out=0.1
+  histogram_interval=1
+  particle_snapshot_interval=1
+  kpara0=0.00743592 kperp/kpara=0.01
+  particle_v0=17.202 duu0=5578.44
+frame 181 active=262144 stored=262144 pmax=0.10666 read_s=0.0617566 inject_s=0.000445561 move_s=1.8956 split_s=0.000110867 frame_s=1.89638 elapsed_s=1.89638
+wrote particle snapshot /home/liuyh/CLionProjects/Kokkos-particleTransport/benchmark_runs/kokkos_cpu_format_example_frame180_262k/kokkos_cpu/particles_00181.bin in 0.038151 s
+Finished in 1.93574 s. Summary: /home/liuyh/CLionProjects/Kokkos-particleTransport/benchmark_runs/kokkos_cpu_format_example_frame180_262k/kokkos_cpu/summary.csv

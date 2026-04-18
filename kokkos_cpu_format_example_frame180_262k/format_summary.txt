@@ -1,0 +1,35 @@
+Kokkos CPU workflow format example
+example_root=/home/liuyh/CLionProjects/Kokkos-particleTransport/benchmark_runs/kokkos_cpu_format_example_frame180_262k
+
+[compact_field]
+path=/home/liuyh/CLionProjects/Kokkos-particleTransport/benchmark_runs/kokkos_cpu_format_example_frame180_262k/compact_field/field00180.bin
+format=int32 nx, int32 ny, double x_edges[nx+1], double y_edges[ny+1], double Bx[nx*ny], By, Bz, Vx, Vy, Vz
+nx=1024
+ny=1024
+x_first=0.0
+x_last=2.0
+y_first=0.0
+y_last=2.0
+file_bytes=50348056
+expected_bytes=50348056
+
+[particle_snapshot]
+path=/home/liuyh/CLionProjects/Kokkos-particleTransport/benchmark_runs/kokkos_cpu_format_example_frame180_262k/kokkos_cpu/particles_00181.bin
+format=KPTPRT\0\0 version 4 particle binary snapshot
+magic=b'KPTPRT\x00\x00'
+version=4
+endian_marker=0x01020304
+space_dim=2
+species=3
+particle_count=262144
+particle_capacity=1048576
+rest_mass=1.0
+charge=-1.0
+speed_of_light=1.0
+energy_scale_erg=1.0
+split_ratio=2.0
+minimum_child_weight=0.0
+record_bytes=100
+file_bytes=26214488
+expected_bytes=26214488
+

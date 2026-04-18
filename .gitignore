@@ -15,6 +15,10 @@ benchmark_runs/
 # Python cache files
 __pycache__/
 *.py[cod]
+.venv/
+particleEmission/backend/*.o
+particleEmission/backend/*.so
+particleEmission/output/
 
 # IDE metadata
 .idea/

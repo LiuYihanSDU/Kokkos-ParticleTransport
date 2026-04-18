@@ -40,6 +40,68 @@ design.
   accumulated runtime versus frame number.
 - `apps/particle_binary_to_xdmf_hdf5.py`: Python converter from the repository
   particle binary snapshot format to ParaView-readable HDF5 plus XDMF Polyvertex data.
+- `particleEmission/EmissionTypes.hpp`: emission workflow common enums and value
+  types for transport-model metadata, source provenance, observer setup, local
+  field/background samples, reduced particle moments, and source-cell closure.
+- `particleEmission/EmissionProviders.hpp`: host-side emission provider interfaces
+  plus first concrete implementations for analytic field access, constant/functional
+  background access, and reduced particle providers that enforce the Parker `mu`
+  handling rule.
+- `particleEmission/__init__.py`: Python package marker for the particle-emission
+  prototype modules.
+- `particleEmission/compact_field_io.py`: compact 2D field reader and coarse-grid
+  averaging helpers for the current sample reconnection field format.
+- `particleEmission/particle_io.py`: minimal particle snapshot reader and weighted
+  coarse-grid deposition utilities for active-particle morphology maps.
+- `particleEmission/microwave_backend.py`: local ctypes wrapper around a rebuilt
+  microwave backend shared library, with fixed-parameter spectrum evaluation and
+  automatic on-demand compilation through `gfortran`.
+- `particleEmission/emission_references.py`: reference-spectrum utilities that build
+  component-aware diagnostic curves from the microwave backend, including thermal-only,
+  low-density no-Razin proxy, optically thin proxy, zero-background reference, and
+  signed absorption/Razin impact spectra.
+- `particleEmission/validation_cases.py`: synthetic validation driver that builds a
+  uniform-source baseline and an analytic loop-top case, reconstructs nonthermal
+  density and power-law index from synthetic macro-particle statistics, and writes
+  theory-vs-reconstruction morphology figures plus spectrum comparisons under a
+  project-root validation output folder, together with parameter-map errors,
+  per-frequency image metrics, broad-band spectral error summaries, and component-aware
+  reference/diagnostic cubes for truth and reconstruction products.
+- `particleEmission/emission_viewer_core.py`: generic emission-product discovery and
+  flattening helpers for HDF5 browsing, including automatic cube/map/spectrum
+  classification, derived polarization-degree products, component/reference discovery,
+  ROI integration, beam scaling, and export support.
+- `particleEmission/emission_viewer_app.py`: Streamlit-based local emission viewer app
+  that opens the simple prototype outputs and synthetic validation products, provides
+  frequency browsing, ROI- and beam-based spectrum extraction, image/map comparison,
+  metric inspection, component/reference spectral overlays, and export buttons for PNG
+  and CSV products.
+- `particleEmission/run_emission_viewer.py`: small launcher that starts the Streamlit
+  emission viewer from the repository-managed virtual environment with project-root
+  default search paths and optional default-product selection.
+- `emissionValidation/`: generated project-root validation output folder containing
+  the runnable synthetic benchmark cases `case1_uniform_source` and
+  `case2_analytic_loop_top` with morphology panels, spectrum comparisons, HDF5
+  products, component-aware reference/diagnostic groups, and summary metadata including
+  parameter, image, and banded-spectrum validation metrics.
+- `particleEmission/emission_hdf5.py`: Python utilities for emission HDF5 product
+  writing/reading, Rayleigh-Jeans specific-intensity and brightness-temperature
+  conversion, frequency slicing, ROI integration, and Gaussian beam convolution.
+- `particleEmission/simple_emission_runner.py`: first runnable end-to-end prototype
+  that reads the example field and particle files, deposits particles to a coarse
+  image grid, calibrates a macro-particle-to-electron conversion factor, synthesizes
+  per-pixel microwave spectra plus component-aware reference/diagnostic cubes, writes an
+  HDF5 product, and saves a quicklook figure.
+- `particleEmission/example_coronal_config.json`: example active-region coronal
+  parameter set for the simple emission prototype CLI.
+- `particleEmission/requirements.txt`: Python dependency list currently used to
+  manage the local particle-emission virtual environment for HDF5 I/O, array
+  operations, plotting, and the local Streamlit viewer app.
+- `particleEmission/workflow_plan.md`: planning document for the future particle
+  emission workflow, covering local source reconstruction, gyrosynchrotron forward
+  synthesis, binary emission products, ROI/beam analysis, staged Kokkos adoption,
+  reserved background-parameter input interfaces, Parker `mu` handling, and support
+  for both file-backed and analytic field providers.
 - `scripts/run_reconnection_three_cases.sh`: top-level benchmark runner that builds the
   CPU/CUDA Kokkos executables and then runs the Fortran, Kokkos CUDA, and Kokkos CPU
   reconnection cases sequentially with separate output directories, log files, and

@@ -1,0 +1,6 @@
+       Nparms;           7              ; ;user ;Number of fit Parms
+ Angular Code;           0             ; ;user ;0L for PK, 1L for FK
+         Npix;           1     ; ;data ;Number of pixels sent to dll
+        Nfreqst;          24  ; ;data ;Number of frequencies in the sp
+ Fitting Mode;           1  ; ;user ;Case of the fit: I:1, L&R:2, I&
+  Stokes Data;           1  ; ;data ;Case of the data: I:1, L&R:2, I

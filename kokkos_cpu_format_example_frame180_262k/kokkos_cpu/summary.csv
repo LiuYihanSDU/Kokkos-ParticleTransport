@@ -1,0 +1,2 @@
+frame,time,stored,active,inactive,weight_sum,p_min,p_max,p_avg,dt_min,dt_max,dt_avg,max_split_level,injected,split,skipped_split_capacity,read_seconds,inject_seconds,move_seconds,split_seconds,total_frame_seconds,total_elapsed_seconds
+181,18.1,262144,262144,0,262144,0.0926576651776244,0.1066599303191789,0.1000007270752096,5.264298266206988e-06,7.05838164808347e-05,5.967187012796585e-05,0,262144,0,0,0.061756621,0.000445561,1.89559753,0.000110867,1.896375542,1.896375592

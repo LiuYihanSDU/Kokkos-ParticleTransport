@@ -181,6 +181,8 @@ cmake-build-benchmark-cpu/kokkos_particle_transport_app \
 
 如果快照文件名符合 `particles_XXXXX.bin`，程序会自动将 `--start-frame` 设为 `XXXXX`；脚本接口可使用 `KPT_RESTART_PARTICLE_SNAPSHOT=/path/to/particles_00100.bin`。
 
+默认情况下，非重启运行会拒绝写入已经包含 `summary.csv`、`run.log`、`particles_*.bin` 或 `momentum_histogram_*.csv` 的输出目录。继续已有快照请使用 `--restart-particle-snapshot`；确实需要覆盖旧结果时显式加入 `--overwrite-output`。
+
 ## 运行时间控制
 
 Kokkos 驱动可以在完成某一帧后干净停止：
@@ -204,6 +206,8 @@ KPT_KOKKOS_WALLTIME_RESERVE_MINUTES=30
 常用封装脚本：
 
 ```bash
+scripts/run_total_benchmark_suite.sh
+scripts/run_total_benchmark_suite_local.sh
 scripts/run_reconnection_three_cases.sh
 scripts/run_reconnection_optimized_comparison.sh
 scripts/run_reconnection_focused_comparison.sh
@@ -211,6 +215,97 @@ scripts/run_local_parker_focused_speed_accuracy_test.sh
 ```
 
 这些脚本可以运行 Fortran、Kokkos CPU 和 Kokkos GPU 对比，并在 `benchmark_runs/` 下生成计时和频谱产物。
+
+`scripts/run_total_benchmark_suite.sh` 是当前的总控 benchmark 入口，现在会直接转发到无邮件的 `scripts/run_total_benchmark_suite_local.sh`。如果你想显式调用抽出来的核心脚本，也可以直接运行后者。该流程会依次运行：
+
+1. Kokkos-particleTransport 三路 benchmark：LiXiaocan GPAT、Kokkos-CPU、Kokkos-GPU。
+2. `/home/liuyh/CLionProjects/amrvac_nlfff_sphere/benchmark0419.md` 定义的 AMRVAC native NLFFF vs AthenaK CT-NLFFF benchmark。
+
+三路粒子 benchmark 默认设置：
+
+```text
+histogram interval: every 10 frames
+split ratio: p threshold multiplied by 1.2 between split levels
+particle snapshots: disabled for this speed/spectrum benchmark
+frame interval: read from mhd_config.dat and converted with the reconnection Alfven-time normalization
+```
+
+输出位置默认是：
+
+```text
+benchmark_runs/combined_benchmark_YYYYMMDD_HHMMSS/
+```
+
+关键产物：
+
+```text
+combined_benchmark_manifest.txt
+combined_benchmark_suite.log
+kpt_reconnection_three_way/reconnection_spectra_panels.png
+kpt_reconnection_three_way/reconnection_timing_panels.png
+kpt_reconnection_three_way/{fortran,kokkos_cpu,kokkos_gpu}/
+nlfff_compare_0419_YYYYMMDD_HHMMSS/nlfff_compare_manifest.json
+```
+
+## 长任务邮件通知
+
+`scripts/run_with_email_notification.sh` 可以包装任意长任务脚本，记录 stdout/stderr 到 log，并发送不依赖 GPT 的邮件通知。脚本会在任务启动时立即发送一次 `STARTED` 状态；如果任务尚未结束，默认每 12 小时发送一次 `RUNNING` 状态；任务结束后再发送 `SUCCESS` 或 `FAILED` 完成邮件。每封运行中状态邮件都会写明下一次自动状态邮件时间。
+
+本机目前未检测到 `sendmail`、`mailx` 或 `msmtp`，因此建议使用 SMTP。第一次使用时需要准备收件地址、SMTP 服务器、SMTP 用户名和授权码/密码：
+
+```bash
+mkdir -p ~/.config
+chmod 700 ~/.config
+printf '%s\n' 'your-smtp-app-password' > ~/.config/kpt_smtp_password
+chmod 600 ~/.config/kpt_smtp_password
+```
+
+示例：
+
+```bash
+KPT_NOTIFY_TO=liu-yh@outlook.com \
+KPT_NOTIFY_FROM=202421417@mail.sdu.edu.cn \
+KPT_NOTIFY_SMTP_HOST=smtp.qiye.163.com \
+KPT_NOTIFY_SMTP_CONNECT_HOST=139.95.4.241 \
+KPT_NOTIFY_SMTP_PORT=465 \
+KPT_NOTIFY_SMTP_SSL=1 \
+KPT_NOTIFY_SMTP_STARTTLS=0 \
+KPT_NOTIFY_SMTP_USER=202421417@mail.sdu.edu.cn \
+KPT_NOTIFY_SMTP_PASSWORD_FILE="$HOME/.config/kpt_smtp_password" \
+scripts/run_with_email_notification.sh \
+  --subject "Parker movie run" \
+  --status-interval-hours 12 \
+  --log benchmark_runs/parker_movie/run_with_notify.log \
+  -- scripts/run_kokkos_cpu_parker_movie_pipeline.sh
+```
+
+调试邮件正文但不真正发送：
+
+```bash
+KPT_NOTIFY_TO=you@example.com \
+scripts/run_with_email_notification.sh \
+  --dry-run-email \
+  -- scripts/validate_reconnection_dt_match.sh
+```
+
+常用环境变量：
+
+```text
+KPT_NOTIFY_TO                       收件人，支持逗号或空格分隔
+KPT_NOTIFY_FROM                     发件人
+KPT_NOTIFY_SMTP_HOST                SMTP 服务器
+KPT_NOTIFY_SMTP_CONNECT_HOST        可选连接主机/IP，用于绕过本机 DNS 代理
+KPT_NOTIFY_SMTP_PORT                SMTP 端口，STARTTLS 常用 587，SSL 常用 465
+KPT_NOTIFY_SMTP_USER                SMTP 用户名
+KPT_NOTIFY_SMTP_PASSWORD_FILE       保存 SMTP 授权码/密码的本地文件
+KPT_NOTIFY_SMTP_PASSWORD            直接通过环境变量传入密码，不建议长期使用
+KPT_NOTIFY_SMTP_SSL                 使用隐式 SSL，默认 0
+KPT_NOTIFY_SMTP_STARTTLS            使用 STARTTLS，默认 1
+KPT_NOTIFY_SMTP_TIMEOUT_SECONDS     SMTP 连接超时，默认 60
+KPT_NOTIFY_STATUS_INTERVAL_HOURS    运行中状态邮件间隔，默认 12；设为 0 可关闭周期状态
+KPT_NOTIFY_ATTACH_MAX_MB            log 附件大小上限，默认 15 MB
+KPT_NOTIFY_FAILS_JOB                邮件发送失败时是否让 wrapper 失败，默认 0
+```
 
 ## 辐射合成与电影流程
 
@@ -254,6 +349,13 @@ scripts/run_kokkos_cpu_parker_movie_pipeline.sh
 波束 FWHM：3 像素
 编码器：通过 ffmpeg 或 imageio-ffmpeg 使用 ProRes HQ
 ```
+
+对当前 reconnection 快照，电影渲染器默认的 `--energy-source auto` 会识别
+`rest_mass=1`、`c=1`、`energy_scale_erg=1` 这类占位粒子元数据，并通过
+`--transport-p0 0.1` 与 `--transport-p0-energy-kev 1.0` 映射快照中保存的输运
+动量；默认阈值坐标为
+`E_keV = (sqrt(1 + p^2) - 1) / (sqrt(1 + 0.1^2) - 1)`。只有带有已标定 CGS
+能标的快照才应使用 `--energy-source snapshot-kinetic`。
 
 逐帧粒子快照体积较大。本地默认规模下，一个 200 帧 Parker 运行可能写出 `50+ GB` 粒子数据。
 

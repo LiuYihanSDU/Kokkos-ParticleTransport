@@ -11,7 +11,7 @@ from pathlib import Path
 
 import matplotlib.pyplot as plt
 import numpy as np
-from matplotlib.ticker import FuncFormatter, MaxNLocator
+from matplotlib.ticker import FuncFormatter, MaxNLocator, MultipleLocator
 
 
 @dataclass(frozen=True)
@@ -60,6 +60,12 @@ def parse_args() -> argparse.Namespace:
         type=Path,
         default=None,
         help="Output combined timing CSV. Defaults to ROOT/reconnection_timing.csv.",
+    )
+    parser.add_argument(
+        "--frame-interval-seconds",
+        type=float,
+        default=1.0,
+        help="Physical seconds per MHD output frame for the accumulated-runtime x-axis.",
     )
     return parser.parse_args()
 
@@ -180,7 +186,9 @@ def read_timing_series(config: CaseConfig) -> TimingSeries:
     raise ValueError(f"unknown case kind: {config.kind}")
 
 
-def write_combined_csv(output_path: Path, series: list[TimingSeries]) -> None:
+def write_combined_csv(
+    output_path: Path, series: list[TimingSeries], frame_interval_seconds: float
+) -> None:
     output_path.parent.mkdir(parents=True, exist_ok=True)
     with output_path.open("w", newline="") as stream:
         writer = csv.writer(stream)
@@ -188,6 +196,7 @@ def write_combined_csv(output_path: Path, series: list[TimingSeries]) -> None:
             [
                 "case",
                 "frame",
+                "physical_time_seconds",
                 "particle_count",
                 "frame_seconds",
                 "elapsed_seconds",
@@ -205,6 +214,7 @@ def write_combined_csv(output_path: Path, series: list[TimingSeries]) -> None:
                     [
                         item.name,
                         int(frame),
+                        f"{float(frame) * frame_interval_seconds:.16e}",
                         f"{count:.16e}",
                         f"{frame_seconds:.16e}",
                         f"{elapsed_seconds:.16e}",
@@ -222,7 +232,19 @@ def compact_count_label(value: float, _: int) -> str:
     return f"{value:g}"
 
 
-def plot_timing(output_path: Path, series: list[TimingSeries]) -> None:
+def display_case_name(case_name: str) -> str:
+    """Return the plot label for a canonical benchmark case name."""
+    labels = {
+        "Fortran": "LiXiaocan GPAT",
+        "Kokkos CPU": "Kokkos-CPU",
+        "Kokkos GPU": "Kokkos-GPU",
+    }
+    return labels.get(case_name, case_name)
+
+
+def plot_timing(
+    output_path: Path, series: list[TimingSeries], frame_interval_seconds: float
+) -> None:
     output_path.parent.mkdir(parents=True, exist_ok=True)
     figure, axes = plt.subplots(1, 2, figsize=(13.5, 5.2))
 
@@ -232,14 +254,14 @@ def plot_timing(output_path: Path, series: list[TimingSeries]) -> None:
             item.frame_seconds,
             color=item.color,
             linewidth=1.7,
-            label=item.name,
+            label=display_case_name(item.name),
         )
         axes[1].plot(
-            item.frame,
-            item.elapsed_seconds,
+            item.frame * frame_interval_seconds,
+            item.elapsed_seconds / 3600.0,
             color=item.color,
             linewidth=1.7,
-            label=item.name,
+            label=display_case_name(item.name),
         )
 
     axes[0].set_title("Frame Time Scaling")
@@ -249,12 +271,14 @@ def plot_timing(output_path: Path, series: list[TimingSeries]) -> None:
     axes[0].xaxis.set_major_locator(MaxNLocator(nbins=7))
 
     axes[1].set_title("Accumulated Runtime")
-    axes[1].set_xlabel("Frame")
-    axes[1].set_ylabel("Total time (s)")
-    axes[1].xaxis.set_major_locator(MaxNLocator(integer=True, nbins=8))
+    axes[1].set_xlabel("Simulation time (s)")
+    axes[1].set_ylabel("Total runtime (h)")
+    axes[1].xaxis.set_major_locator(MaxNLocator(nbins=8))
+    axes[1].yaxis.set_major_locator(MultipleLocator(1.0))
 
+    axes[0].grid(True, linewidth=0.45, alpha=0.35)
+    axes[1].grid(True, axis="y", which="major", linewidth=0.55, alpha=0.45)
     for axis in axes:
-        axis.grid(True, linewidth=0.45, alpha=0.35)
         axis.legend(frameon=False)
 
     figure.suptitle("Reconnection Benchmark Timing")
@@ -275,8 +299,8 @@ def main() -> None:
     ]
 
     series = [read_timing_series(case) for case in cases]
-    write_combined_csv(csv_output, series)
-    plot_timing(output, series)
+    write_combined_csv(csv_output, series, args.frame_interval_seconds)
+    plot_timing(output, series, args.frame_interval_seconds)
     print(f"Wrote {output}")
     print(f"Wrote {csv_output}")
 

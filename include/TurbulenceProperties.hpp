@@ -440,6 +440,11 @@ private:
         d_lc_dr = scalar_field_type(grid, (prefix + "_d_lc_dr").c_str());
     }
 
+public:
+    /*
+     * CUDA extended lambdas require this field-initialization kernel helper to be public.
+     */
+
     /**
      * Fill turbulence-property fields from the configured model.
      */

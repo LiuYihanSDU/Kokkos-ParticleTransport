@@ -129,6 +129,7 @@ struct Reconnection2DSettings {
     int max_particle_steps_per_interval{200000};
     bool split_particles{true};
     bool time_interpolation{true};
+    bool overwrite_output{false};
     double walltime_limit_seconds{0.0};
     double walltime_reserve_seconds{0.0};
 
@@ -194,6 +195,10 @@ struct Reconnection2DSettings {
             !std::filesystem::exists(restart_particle_snapshot_path)) {
             throw std::runtime_error(
                 "Reconnection2DSettings: restart particle snapshot does not exist.");
+        }
+        if (restart_enabled() && overwrite_output) {
+            throw std::runtime_error(
+                "Reconnection2DSettings: --overwrite-output cannot be combined with restart.");
         }
         if (particles_per_frame == 0 || rank_scale == 0 || particle_capacity == 0) {
             throw std::runtime_error(
@@ -421,6 +426,63 @@ std::string particle_snapshot_file_path(const std::string& output_dir,
     path << output_dir << "/particles_" << std::setw(5) << std::setfill('0')
          << frame << ".bin";
     return path.str();
+}
+
+/**
+ * Return whether a file name is produced by the reconnection calibration driver.
+ */
+bool is_reconnection_output_artifact(const std::string& name) {
+    constexpr std::string_view particle_prefix{"particles_"};
+    constexpr std::string_view histogram_prefix{"momentum_histogram_"};
+    constexpr std::string_view csv_suffix{".csv"};
+    constexpr std::string_view bin_suffix{".bin"};
+    if (name == "summary.csv" || name == "run.log") {
+        return true;
+    }
+    return ((name.size() > particle_prefix.size() + bin_suffix.size()) &&
+            name.compare(0, particle_prefix.size(), particle_prefix) == 0 &&
+            name.compare(name.size() - bin_suffix.size(), bin_suffix.size(),
+                         bin_suffix) == 0) ||
+           ((name.size() > histogram_prefix.size() + csv_suffix.size()) &&
+            name.compare(0, histogram_prefix.size(), histogram_prefix) == 0 &&
+            name.compare(name.size() - csv_suffix.size(), csv_suffix.size(),
+                         csv_suffix) == 0);
+}
+
+/**
+ * Return whether the output directory already contains solver-owned artifacts.
+ */
+bool output_directory_has_reconnection_outputs(const std::string& output_dir) {
+    const std::filesystem::path directory(output_dir);
+    if (!std::filesystem::exists(directory)) {
+        return false;
+    }
+    if (!std::filesystem::is_directory(directory)) {
+        throw std::runtime_error(
+            "Reconnection output path exists but is not a directory.");
+    }
+    for (const auto& entry : std::filesystem::directory_iterator(directory)) {
+        if (is_reconnection_output_artifact(entry.path().filename().string())) {
+            return true;
+        }
+    }
+    return false;
+}
+
+/**
+ * Reject accidental overwrites of existing non-restart solver output.
+ */
+void require_fresh_output_directory(const Reconnection2DSettings& settings) {
+    if (settings.restart_enabled() || settings.overwrite_output) {
+        return;
+    }
+    if (output_directory_has_reconnection_outputs(settings.output_dir)) {
+        throw std::runtime_error(
+            "Output directory already contains reconnection solver outputs. "
+            "Use --restart-particle-snapshot to continue a completed-frame "
+            "snapshot, choose a new --output-dir, or pass --overwrite-output "
+            "to replace the existing run.");
+    }
 }
 
 /**
@@ -2210,6 +2272,8 @@ int run_transport_loop(const Reconnection2DSettings& settings,
            << (settings.restart_enabled()
                    ? settings.restart_particle_snapshot_path
                    : std::string("disabled")) << '\n'
+           << "  overwrite_output="
+           << (settings.overwrite_output ? "enabled" : "disabled") << '\n'
            << "  frames=" << settings.start_frame << ".."
            << settings.end_frame << " (" << settings.interval_count()
            << " intervals)\n"
@@ -2411,6 +2475,7 @@ Reconnection2DSettings parse_settings(const int argc, char** argv) {
                 << "  --parker-transport            shorthand for --transport parker\n"
                 << "  --restart-particle-snapshot PATH\n"
                 << "                                load particles_XXXXX.bin and continue from frame XXXXX\n"
+                << "  --overwrite-output           allow a fresh non-restart run to replace existing outputs\n"
                 << "  --field-dir PATH              override profile field directory\n"
                 << "  --output-dir PATH             override profile output directory\n"
                 << "  --start-frame N               default 0\n"
@@ -2432,6 +2497,8 @@ Reconnection2DSettings parse_settings(const int argc, char** argv) {
                 << "  --walltime-reserve-seconds X  subtract X seconds from the stop limit\n"
                 << "  --particle-v0 X               focused initial speed at p0\n"
                 << "  --duu0 X                      focused D_mumu normalization\n"
+                << "  --split-ratio X               split threshold ratio between split levels\n"
+                << "  --pmin-split-over-p0 X        first split threshold divided by p0\n"
                 << "  --no-split                    disable Fortran-style particle splitting\n"
                 << "  --no-time-interp              use the lower MHD frame only\n";
             std::exit(0);
@@ -2447,6 +2514,8 @@ Reconnection2DSettings parse_settings(const int argc, char** argv) {
         } else if (arg == "--restart-particle-snapshot") {
             settings.restart_particle_snapshot_path =
                 require_option_value(argc, argv, i, arg);
+        } else if (arg == "--overwrite-output") {
+            settings.overwrite_output = true;
         } else if (arg == "--field-dir") {
             settings.field_dir = require_option_value(argc, argv, i, arg);
         } else if (arg == "--output-dir") {
@@ -2505,6 +2574,12 @@ Reconnection2DSettings parse_settings(const int argc, char** argv) {
                 std::stod(require_option_value(argc, argv, i, arg));
         } else if (arg == "--duu0") {
             settings.duu0 = std::stod(require_option_value(argc, argv, i, arg));
+        } else if (arg == "--split-ratio") {
+            settings.split_ratio =
+                std::stod(require_option_value(argc, argv, i, arg));
+        } else if (arg == "--pmin-split-over-p0") {
+            settings.pmin_split_over_p0 =
+                std::stod(require_option_value(argc, argv, i, arg));
         } else if (arg == "--no-split") {
             settings.split_particles = false;
         } else if (arg == "--no-time-interp") {
@@ -2542,6 +2617,7 @@ int run(const Reconnection2DSettings& settings) {
     using particle_storage_type = ReconnectionParticleStorage<>;
     using random_manager_type = RandomManager<>;
 
+    require_fresh_output_directory(settings);
     std::filesystem::create_directories(settings.output_dir);
     const std::string summary_path = settings.output_dir + "/summary.csv";
     const std::string log_path = settings.output_dir + "/run.log";

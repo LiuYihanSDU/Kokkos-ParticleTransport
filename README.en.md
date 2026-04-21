@@ -181,6 +181,8 @@ cmake-build-benchmark-cpu/kokkos_particle_transport_app \
 
 When the snapshot name matches `particles_XXXXX.bin`, the driver infers `--start-frame XXXXX`; shell wrappers expose the same path through `KPT_RESTART_PARTICLE_SNAPSHOT=/path/to/particles_00100.bin`.
 
+Fresh non-restart runs refuse to write into an output directory that already contains `summary.csv`, `run.log`, `particles_*.bin`, or `momentum_histogram_*.csv`. Use `--restart-particle-snapshot` to continue from an existing snapshot, or pass `--overwrite-output` when replacing old results is intentional.
+
 ## Walltime Control
 
 The Kokkos driver can stop cleanly at a completed frame:
@@ -204,6 +206,8 @@ This is a frame-boundary diagnostic stop, not a restart/checkpoint system.
 Common wrappers:
 
 ```bash
+scripts/run_total_benchmark_suite.sh
+scripts/run_total_benchmark_suite_local.sh
 scripts/run_reconnection_three_cases.sh
 scripts/run_reconnection_optimized_comparison.sh
 scripts/run_reconnection_focused_comparison.sh
@@ -211,6 +215,97 @@ scripts/run_local_parker_focused_speed_accuracy_test.sh
 ```
 
 These scripts can run Fortran, Kokkos CPU, and Kokkos GPU comparisons and generate timing/spectrum products under `benchmark_runs/`.
+
+`scripts/run_total_benchmark_suite.sh` is the current top-level benchmark entry point and now forwards directly to the notification-free `scripts/run_total_benchmark_suite_local.sh`. If you want to call the extracted core driver explicitly, you can run that script directly. The workflow then runs:
+
+1. The Kokkos-particleTransport three-way benchmark: LiXiaocan GPAT, Kokkos-CPU, and Kokkos-GPU.
+2. The AMRVAC native NLFFF vs AthenaK CT-NLFFF benchmark defined by `/home/liuyh/CLionProjects/amrvac_nlfff_sphere/benchmark0419.md`.
+
+Default particle benchmark settings:
+
+```text
+histogram interval: every 10 frames
+split ratio: p threshold multiplied by 1.2 between split levels
+particle snapshots: disabled for this speed/spectrum benchmark
+frame interval: read from mhd_config.dat and converted with the reconnection Alfven-time normalization
+```
+
+Default output root:
+
+```text
+benchmark_runs/combined_benchmark_YYYYMMDD_HHMMSS/
+```
+
+Key products:
+
+```text
+combined_benchmark_manifest.txt
+combined_benchmark_suite.log
+kpt_reconnection_three_way/reconnection_spectra_panels.png
+kpt_reconnection_three_way/reconnection_timing_panels.png
+kpt_reconnection_three_way/{fortran,kokkos_cpu,kokkos_gpu}/
+nlfff_compare_0419_YYYYMMDD_HHMMSS/nlfff_compare_manifest.json
+```
+
+## Long-Job Email Notification
+
+`scripts/run_with_email_notification.sh` can wrap any long-running command, write stdout/stderr to a log file, and send GPT-independent email notifications. It sends a `STARTED` status immediately when the job begins. If the job is still running, it sends a `RUNNING` status every 12 hours by default. After the job exits, it sends a final `SUCCESS` or `FAILED` email. Every in-progress status email includes the next automatic status time.
+
+This workstation currently does not expose `sendmail`, `mailx`, or `msmtp`, so SMTP is the recommended path. Before first use, prepare the recipient address, SMTP server, SMTP user, and app password or authorization code:
+
+```bash
+mkdir -p ~/.config
+chmod 700 ~/.config
+printf '%s\n' 'your-smtp-app-password' > ~/.config/kpt_smtp_password
+chmod 600 ~/.config/kpt_smtp_password
+```
+
+Example:
+
+```bash
+KPT_NOTIFY_TO=liu-yh@outlook.com \
+KPT_NOTIFY_FROM=202421417@mail.sdu.edu.cn \
+KPT_NOTIFY_SMTP_HOST=smtp.qiye.163.com \
+KPT_NOTIFY_SMTP_CONNECT_HOST=139.95.4.241 \
+KPT_NOTIFY_SMTP_PORT=465 \
+KPT_NOTIFY_SMTP_SSL=1 \
+KPT_NOTIFY_SMTP_STARTTLS=0 \
+KPT_NOTIFY_SMTP_USER=202421417@mail.sdu.edu.cn \
+KPT_NOTIFY_SMTP_PASSWORD_FILE="$HOME/.config/kpt_smtp_password" \
+scripts/run_with_email_notification.sh \
+  --subject "Parker movie run" \
+  --status-interval-hours 12 \
+  --log benchmark_runs/parker_movie/run_with_notify.log \
+  -- scripts/run_kokkos_cpu_parker_movie_pipeline.sh
+```
+
+To inspect the generated email without sending it:
+
+```bash
+KPT_NOTIFY_TO=you@example.com \
+scripts/run_with_email_notification.sh \
+  --dry-run-email \
+  -- scripts/validate_reconnection_dt_match.sh
+```
+
+Common environment variables:
+
+```text
+KPT_NOTIFY_TO                       recipient list, comma or space separated
+KPT_NOTIFY_FROM                     sender address
+KPT_NOTIFY_SMTP_HOST                SMTP server
+KPT_NOTIFY_SMTP_CONNECT_HOST        optional TCP connect host/IP for proxied local DNS
+KPT_NOTIFY_SMTP_PORT                SMTP port, commonly 587 for STARTTLS or 465 for SSL
+KPT_NOTIFY_SMTP_USER                SMTP user name
+KPT_NOTIFY_SMTP_PASSWORD_FILE       local file containing the SMTP password/app code
+KPT_NOTIFY_SMTP_PASSWORD            direct environment password, not recommended for long-term use
+KPT_NOTIFY_SMTP_SSL                 use implicit SSL, default 0
+KPT_NOTIFY_SMTP_STARTTLS            use STARTTLS, default 1
+KPT_NOTIFY_SMTP_TIMEOUT_SECONDS     SMTP connection timeout, default 60
+KPT_NOTIFY_STATUS_INTERVAL_HOURS    in-progress status interval, default 12; set 0 to disable
+KPT_NOTIFY_ATTACH_MAX_MB            log attachment limit, default 15 MB
+KPT_NOTIFY_FAILS_JOB                fail the wrapper when email sending fails, default 0
+```
 
 ## Emission Synthesis and Movie Pipeline
 
@@ -254,6 +349,14 @@ image grid: 128 x 128
 beam FWHM: 3 pixels
 codec: ProRes HQ through ffmpeg or imageio-ffmpeg
 ```
+
+For current reconnection snapshots, the movie renderer's default `--energy-source auto`
+detects placeholder particle metadata (`rest_mass=1`, `c=1`, `energy_scale_erg=1`) and
+maps the stored transport momentum through `--transport-p0 0.1` and
+`--transport-p0-energy-kev 1.0`, so the default threshold coordinate is
+`E_keV = (sqrt(1 + p^2) - 1) / (sqrt(1 + 0.1^2) - 1)`. Use
+`--energy-source snapshot-kinetic` only for snapshots with a calibrated CGS energy
+scale.
 
 Per-frame particle snapshots are large. A 200-frame Parker run at the local default size can write `50+ GB` of particle data.
 

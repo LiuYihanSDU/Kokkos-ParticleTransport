@@ -1152,6 +1152,11 @@ private:
         return std::string(label) + suffix;
     }
 
+public:
+    /*
+     * CUDA extended lambdas require this constructor-time kernel helper to be public.
+     */
+
     /**
      * Initialize ids, status flags, sort keys, and numeric arrays.
      */
@@ -1192,6 +1197,7 @@ private:
         Kokkos::fence("ParticleSystem::initialize_default_state");
     }
 
+private:
     /**
      * Particle binary snapshot magic.
      */

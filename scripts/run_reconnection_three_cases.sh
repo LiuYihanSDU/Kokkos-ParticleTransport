@@ -95,6 +95,9 @@ KOKKOS_GPU_HOST_THREADS="${KPT_KOKKOS_GPU_HOST_THREADS:-1}"
 KOKKOS_CPU_THREADS="${KPT_KOKKOS_CPU_THREADS:-${CPU_CORE_COUNT}}"
 PARTICLE_V0="${KPT_PARTICLE_V0:-17.20195}"
 DUU0="${KPT_DUU0:-5578.445}"
+SPLIT_RATIO="${KPT_SPLIT_RATIO:-2.0}"
+PMIN_SPLIT_OVER_P0="${KPT_PMIN_SPLIT_OVER_P0:-2.0}"
+RECONNECTION_FRAME_SECONDS="${KPT_RECONNECTION_FRAME_SECONDS:-}"
 COMMON_WALLTIME_HOURS="${KPT_WALLTIME_HOURS:-}"
 FORTRAN_WALLTIME_HOURS="${KPT_FORTRAN_WALLTIME_HOURS:-${COMMON_WALLTIME_HOURS:-12.0}}"
 KOKKOS_WALLTIME_HOURS="${KPT_KOKKOS_WALLTIME_HOURS:-${COMMON_WALLTIME_HOURS}}"
@@ -131,12 +134,61 @@ run_logged_in_dir() {
     (cd "${work_dir}" && "$@") 2>&1 | tee -a "${log_file}"
 }
 
+compute_reconnection_frame_seconds() {
+    python3 - "${FORTRAN_MHD_DIR%/}/mhd_config.dat" <<'PY'
+from __future__ import annotations
+
+import math
+import os
+import struct
+import sys
+from pathlib import Path
+
+path = Path(sys.argv[1])
+data = path.read_bytes()
+if len(data) < 13 * 8:
+    raise SystemExit(f"{path} is too short to contain dt_out")
+dt_out = struct.unpack("<13d", data[:13 * 8])[12]
+if dt_out <= 0.0:
+    raise SystemExit(f"invalid dt_out={dt_out}")
+
+override = os.environ.get("KPT_TIME_UNIT_SECONDS")
+if override:
+    time_unit_seconds = float(override)
+else:
+    length_m = float(os.environ.get("KPT_RECONNECTION_L0_M", "5.0e6"))
+    magnetic_field_g = float(os.environ.get("KPT_RECONNECTION_B0_G", "50.0"))
+    number_density_cm3 = float(os.environ.get("KPT_RECONNECTION_N0_CM3", "1.0e10"))
+    proton_mass_g = 1.6726219e-24
+    alfven_speed_cm_s = (
+        magnetic_field_g
+        / math.sqrt(4.0 * math.pi * number_density_cm3 * proton_mass_g)
+    )
+    time_unit_seconds = length_m / (alfven_speed_cm_s / 100.0)
+
+print(f"{dt_out * time_unit_seconds:.17g}")
+PY
+}
+
+if [[ -z "${RECONNECTION_FRAME_SECONDS}" ]]; then
+    RECONNECTION_FRAME_SECONDS="$(compute_reconnection_frame_seconds)"
+fi
+
 prepare_case_dir() {
     local case_dir="$1"
     if [[ -z "${RESTART_PARTICLE_SNAPSHOT}" ]]; then
         rm -rf "${case_dir}"
     fi
     mkdir -p "${case_dir}/restart"
+}
+
+prepare_fortran_restart_dir() {
+    # The Fortran reference executable saves MT stream states under RUN_ROOT/restart.
+    # Keep this directory in sync with per-case cleanup policy.
+    if [[ -z "${RESTART_PARTICLE_SNAPSHOT}" ]]; then
+        rm -rf "${RUN_ROOT}/restart"
+    fi
+    mkdir -p "${RUN_ROOT}/restart"
 }
 
 require_file() {
@@ -294,6 +346,9 @@ kokkos_gpu_host_threads=${KOKKOS_GPU_HOST_THREADS}
 kokkos_cpu_threads=${KOKKOS_CPU_THREADS}
 particle_v0=${PARTICLE_V0}
 duu0=${DUU0}
+split_ratio=${SPLIT_RATIO}
+pmin_split_over_p0=${PMIN_SPLIT_OVER_P0}
+reconnection_frame_seconds=${RECONNECTION_FRAME_SECONDS}
 common_walltime_hours=${COMMON_WALLTIME_HOURS}
 fortran_walltime_hours=${FORTRAN_WALLTIME_HOURS}
 kokkos_walltime_hours=${KOKKOS_WALLTIME_HOURS}
@@ -318,6 +373,7 @@ prepare_fortran_config() {
 
 run_fortran_case() {
     prepare_case_dir "${FORTRAN_DIR}"
+    prepare_fortran_restart_dir
     prepare_fortran_config
 
     local output_dir="${FORTRAN_DIR}/"
@@ -329,7 +385,7 @@ run_fortran_case() {
         -ti 1 -ts "${START_FRAME}" -te "${END_FRAME}" -tm "${END_FRAME}"
         -st 0
         -df 1 -pi 6.2
-        -sf 1 -sr 2.0 -ps 2.0
+        -sf 1 -sr "${SPLIT_RATIO}" -ps "${PMIN_SPLIT_OVER_P0}"
         -tf .false. -ptf tags_selected_01.h5
         -ni 100
         -dd "${output_dir}" -cf "${FORTRAN_CONF_NAME}"
@@ -397,6 +453,8 @@ run_kokkos_case() {
         --capacity "${CXX_PARTICLE_CAPACITY}" \
         --particle-v0 "${PARTICLE_V0}" \
         --duu0 "${DUU0}" \
+        --split-ratio "${SPLIT_RATIO}" \
+        --pmin-split-over-p0 "${PMIN_SPLIT_OVER_P0}" \
         --diagnostic-interval 1 \
         --histogram-interval "${HISTOGRAM_INTERVAL}" \
         --particle-snapshot-interval "${PARTICLE_SNAPSHOT_INTERVAL}" \
@@ -441,12 +499,16 @@ run_postprocess_plots() {
         --frame-start "${spectrum_start}" \
         --frame-end "${END_FRAME}" \
         --frame-step "${spectrum_step}" \
+        --frame-interval-seconds "${RECONNECTION_FRAME_SECONDS}" \
+        --energy-x-min 0.05 \
+        --energy-x-max 20 \
         --output "${RUN_ROOT}/reconnection_spectra_panels.png" \
         --csv-output "${RUN_ROOT}/reconnection_spectra.csv"
     run_logged "${RUN_ROOT}/postprocess_timing.log" \
         env MPLBACKEND=Agg "${python_bin}" \
         "${REPO_ROOT}/apps/plot_reconnection_timing.py" \
         --root "${RUN_ROOT}" \
+        --frame-interval-seconds "${RECONNECTION_FRAME_SECONDS}" \
         --output "${RUN_ROOT}/reconnection_timing_panels.png" \
         --csv-output "${RUN_ROOT}/reconnection_timing.csv"
 }

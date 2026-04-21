@@ -16,6 +16,8 @@ Useful overrides:
   KPT_MPI_SIZE                    MPI ranks, default KPT_CPU_CORES
   KPT_PARTICLES_PER_RANK          Fortran -np value, default 1600
   KPT_END_FRAME                   Final MHD frame, default 200
+  KPT_WALLTIME_HOURS              Common walltime quota, default 12.0 for Fortran
+  KPT_FORTRAN_WALLTIME_HOURS      Fortran -qh value, overrides KPT_WALLTIME_HOURS
   KPT_FORTRAN_COMPILER            Fortran MPI compiler, default /usr/bin/mpif90
   KPT_FORTRAN_AVX512_FLAGS        Full Fortran optimization and ISA flags
   KPT_HDF5_ROOT                   Parallel HDF5 root, default OpenMPI HDF5
@@ -124,6 +126,8 @@ MPI_SIZE="${KPT_MPI_SIZE:-${CPU_CORE_COUNT}}"
 PARTICLES_PER_RANK="${KPT_PARTICLES_PER_RANK:-1600}"
 FORTRAN_PARTICLE_CAPACITY="${KPT_FORTRAN_PARTICLE_CAPACITY:-1000000}"
 FORTRAN_OMP_THREADS="${KPT_FORTRAN_OMP_THREADS:-1}"
+COMMON_WALLTIME_HOURS="${KPT_WALLTIME_HOURS:-}"
+FORTRAN_WALLTIME_HOURS="${KPT_FORTRAN_WALLTIME_HOURS:-${COMMON_WALLTIME_HOURS:-12.0}}"
 TIME_CMD="${KPT_TIME_CMD:-/usr/bin/time}"
 MPI_RUN="${KPT_MPI_RUN:-mpirun}"
 
@@ -196,6 +200,8 @@ mpi_size=${MPI_SIZE}
 particles_per_rank=${PARTICLES_PER_RANK}
 fortran_particle_capacity=${FORTRAN_PARTICLE_CAPACITY}
 fortran_omp_threads=${FORTRAN_OMP_THREADS}
+common_walltime_hours=${COMMON_WALLTIME_HOURS}
+fortran_walltime_hours=${FORTRAN_WALLTIME_HOURS}
 EOF
 }
 
@@ -221,7 +227,7 @@ run_fortran_case() {
 
     local output_dir="${FORTRAN_DIR}/"
     local args=(
-        -qh 12.0 -rf .false.
+        -qh "${FORTRAN_WALLTIME_HOURS}" -rf .false.
         -ft .false. -nl .false. -kk 6.770161725403334
         -pv 17.20195 -sm 1
         -dm "${FORTRAN_MHD_DIR}" -mc mhd_config.dat -np "${PARTICLES_PER_RANK}"

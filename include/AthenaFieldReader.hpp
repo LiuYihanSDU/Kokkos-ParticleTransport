@@ -1,5 +1,6 @@
 #pragma once
 
+#include <algorithm>
 #include <bit>
 #include <cmath>
 #include <cstddef>
@@ -68,8 +69,8 @@ struct AthenaBackgroundField {
     using device_type = DeviceType;
     using layout_type = LayoutType;
     using grid_type =
-        StoredCoordinateGrid<athena_binary_space_dim, device_type, layout_type,
-                             athena_binary_vector_dim>;
+        AnalyticCoordinateGrid<athena_binary_space_dim, device_type, layout_type,
+                               athena_binary_vector_dim>;
     using vector_field_type =
         VectorField<grid_type, athena_binary_vector_dim, layout_type>;
 
@@ -160,34 +161,35 @@ inline void validate_face_edges(const std::vector<double>& edges, const char* ax
     }
 }
 
-inline double extended_face_coordinate(const std::vector<double>& physical_edges,
-                                       const int logical_face_index) {
-    const int physical_face_count = static_cast<int>(physical_edges.size());
-    const int upper_physical_face = physical_face_count - 1;
-    if (logical_face_index >= 0 && logical_face_index <= upper_physical_face) {
-        return physical_edges[static_cast<std::size_t>(logical_face_index)];
+/**
+ * Validate that compact Athena face coordinates represent a uniform analytic grid.
+ */
+inline double validate_uniform_face_edges(const std::vector<double>& edges,
+                                          const char* axis_name) {
+    validate_face_edges(edges, axis_name);
+
+    const auto interval_count = static_cast<double>(edges.size() - 1);
+    const double span = edges.back() - edges.front();
+    const double step = span / interval_count;
+    if (!std::isfinite(step) || step <= 0.0) {
+        throw std::runtime_error(std::string("AthenaFieldReader: ") + axis_name +
+                                 " face spacing must be positive and finite.");
     }
 
-    if (logical_face_index < 0) {
-        const double lower_width = physical_edges[1] - physical_edges[0];
-        return physical_edges[0] + static_cast<double>(logical_face_index) * lower_width;
+    for (std::size_t i = 1; i < edges.size(); ++i) {
+        const double current_step = edges[i] - edges[i - 1];
+        const double magnitude =
+            std::max({std::abs(span), std::abs(step), std::abs(current_step), 1.0});
+        const double tolerance =
+            1024.0 * std::numeric_limits<double>::epsilon() * magnitude;
+        if (std::abs(current_step - step) > tolerance) {
+            throw std::runtime_error(
+                std::string("AthenaFieldReader: ") + axis_name +
+                " face coordinates must be uniformly spaced for analytic grid loading.");
+        }
     }
 
-    const double upper_width =
-        physical_edges[static_cast<std::size_t>(upper_physical_face)] -
-        physical_edges[static_cast<std::size_t>(upper_physical_face - 1)];
-    return physical_edges[static_cast<std::size_t>(upper_physical_face)] +
-           static_cast<double>(logical_face_index - upper_physical_face) * upper_width;
-}
-
-template <typename GridType>
-int max_face_coordinate_count(const GridType& metadata) {
-    int count = 0;
-    for (int dim = 0; dim < GridType::space_dim; ++dim) {
-        const int dim_count = metadata.total_extent(dim, GridCentering::FaceCentered);
-        count = dim_count > count ? dim_count : count;
-    }
-    return count;
+    return step;
 }
 
 template <typename DeviceType, typename LayoutType>
@@ -201,7 +203,6 @@ typename AthenaBackgroundField<DeviceType, LayoutType>::grid_type make_grid(
     using grid_type = typename background_type::grid_type;
     using metadata_type =
         Grid<athena_binary_space_dim, DeviceType, LayoutType, athena_binary_vector_dim>;
-    using coordinate_view_type = typename grid_type::coordinate_view_type;
 
     typename metadata_type::index_array_type extents{};
     extents[0] = nx;
@@ -209,32 +210,21 @@ typename AthenaBackgroundField<DeviceType, LayoutType>::grid_type make_grid(
 
     metadata_type metadata(extents, options.ghost_cells, options.periodic,
                            options.coordinate_system);
-    const int coordinate_count = max_face_coordinate_count(metadata);
-    coordinate_view_type face_coordinates("athena_face_coordinates",
-                                          athena_binary_space_dim,
-                                          coordinate_count);
-    auto face_host = Kokkos::create_mirror_view(face_coordinates);
-    for (int dim = 0; dim < athena_binary_space_dim; ++dim) {
-        for (int storage = 0; storage < coordinate_count; ++storage) {
-            face_host(dim, storage) = 0.0;
-        }
-    }
 
     const std::vector<double>* edge_sets[athena_binary_space_dim] = {&x_edges, &y_edges};
+    typename grid_type::discretization_array_type discretization{};
+    typename grid_type::scalar_array_type start{};
+    typename grid_type::scalar_array_type step{};
     for (int dim = 0; dim < athena_binary_space_dim; ++dim) {
-        const int lower_ghost = metadata.ghost_extent(dim, LowerBoundary);
-        const int face_count = metadata.total_extent(dim, GridCentering::FaceCentered);
-        for (int storage = 0; storage < face_count; ++storage) {
-            const int logical_face_index = storage - lower_ghost;
-            face_host(dim, storage) =
-                extended_face_coordinate(*edge_sets[dim], logical_face_index);
-        }
+        discretization[dim] = AnalyticGridDiscretization::UniformSpacing;
+        start[dim] = edge_sets[dim]->front();
+        step[dim] = validate_uniform_face_edges(*edge_sets[dim],
+                                                dim == 0 ? "x" : "y");
     }
-    Kokkos::deep_copy(face_coordinates, face_host);
 
-    return GridValidation::make_validated_stored_coordinate_grid<
+    return GridValidation::make_validated_analytic_coordinate_grid<
         athena_binary_space_dim, DeviceType, LayoutType, athena_binary_vector_dim>(
-        metadata, face_coordinates, options.grid_validation);
+        metadata, discretization, start, step, options.grid_validation);
 }
 
 template <typename FieldType, typename HostDataView>

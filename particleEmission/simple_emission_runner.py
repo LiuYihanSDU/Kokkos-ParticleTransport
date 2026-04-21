@@ -11,6 +11,7 @@ from pathlib import Path
 import matplotlib.pyplot as plt
 import numpy as np
 
+from .background_io import coarse_background_maps, read_emission_background_maps
 from .compact_field_io import coarse_average_2d, coarse_pixel_centers, read_compact_field_snapshot
 from .emission_hdf5 import (
     EmissionHdf5Metadata,
@@ -45,6 +46,8 @@ class SimpleEmissionConfig:
     output_hdf5: str = "particleEmission/output/simple_emission.h5"
     output_quicklook: str = "particleEmission/output/simple_emission.png"
     transport_model: str = "parker"
+    background_path: str = ""
+    frame_id: int = 180
     image_nx: int = 32
     image_ny: int = 32
     frequencies_ghz: tuple[float, ...] = (
@@ -90,6 +93,8 @@ class SimpleEmissionConfig:
     magnetic_field_bins: int = 8
     nonthermal_density_bins: int = 8
     power_law_index_bins: int = 8
+    thermal_density_bins: int = 4
+    temperature_bins: int = 4
 
 
 def _load_config(arguments: argparse.Namespace) -> SimpleEmissionConfig:
@@ -99,7 +104,8 @@ def _load_config(arguments: argparse.Namespace) -> SimpleEmissionConfig:
         with Path(arguments.config).open("r", encoding="utf-8") as handle:
             loaded = json.load(handle)
         config_dict = asdict(config)
-        config_dict.update(loaded)
+        known_loaded = {key: value for key, value in loaded.items() if key in config_dict}
+        config_dict.update(known_loaded)
         config = SimpleEmissionConfig(**config_dict)
 
     for field_name in asdict(config):
@@ -120,24 +126,28 @@ def _parse_arguments() -> argparse.Namespace:
     parser.add_argument("--output-hdf5", dest="output_hdf5", type=str)
     parser.add_argument("--output-quicklook", dest="output_quicklook", type=str)
     parser.add_argument("--transport-model", dest="transport_model", type=str)
+    parser.add_argument("--background-path", dest="background_path", type=str)
+    parser.add_argument("--frame-id", dest="frame_id", type=int)
     parser.add_argument("--image-nx", dest="image_nx", type=int)
     parser.add_argument("--image-ny", dest="image_ny", type=int)
     parser.add_argument("--quicklook-frequency-ghz", dest="quicklook_frequency_ghz", type=float)
     parser.add_argument("--beam-fwhm-pixels", dest="beam_fwhm_pixels", type=float)
     parser.add_argument("--pixel-size-arcsec", dest="pixel_size_arcsec", type=float)
     parser.add_argument("--minimum-particle-energy-ev", dest="minimum_particle_energy_ev", type=float)
-    parser.add_argument("--nonthermal-density-peak-cm3", dest="nonthermal_density_peak_cm3", type=float)
+    parser.add_argument("--nonthermal-density-peak-cm3", dest="target_peak_nonthermal_density_cm3", type=float)
     parser.add_argument("--thermal-density-cm3", dest="thermal_density_cm3", type=float)
     parser.add_argument("--temperature-mk", dest="temperature_mk", type=float)
     parser.add_argument("--los-depth-arcsec", dest="los_depth_arcsec", type=float)
     parser.add_argument("--viewing-angle-deg", dest="viewing_angle_deg", type=float)
-    parser.add_argument("--power-law-index", dest="power_law_index", type=float)
+    parser.add_argument("--power-law-index", dest="power_law_index_default", type=float)
     parser.add_argument("--minimum-energy-mev", dest="minimum_energy_mev", type=float)
     parser.add_argument("--maximum-energy-mev", dest="maximum_energy_mev", type=float)
     parser.add_argument("--magnetic-field-floor-gauss", dest="magnetic_field_floor_gauss", type=float)
     parser.add_argument("--magnetic-field-peak-gauss", dest="magnetic_field_peak_gauss", type=float)
     parser.add_argument("--magnetic-field-bins", dest="magnetic_field_bins", type=int)
     parser.add_argument("--nonthermal-density-bins", dest="nonthermal_density_bins", type=int)
+    parser.add_argument("--thermal-density-bins", dest="thermal_density_bins", type=int)
+    parser.add_argument("--temperature-bins", dest="temperature_bins", type=int)
     return parser.parse_args()
 
 
@@ -354,6 +364,24 @@ def run_simple_emission(config: SimpleEmissionConfig) -> tuple[Path, Path]:
         config.pixel_size_arcsec,
         config.los_depth_arcsec,
     )
+    if config.background_path:
+        background_maps = read_emission_background_maps(config.background_path)
+        thermal_density_map, temperature_mk_map = coarse_background_maps(
+            background_maps, config.image_nx, config.image_ny
+        )
+        background_source_kind = "mhd_converted"
+    else:
+        thermal_density_map = np.full(
+            (config.image_ny, config.image_nx),
+            config.thermal_density_cm3,
+            dtype=np.float64,
+        )
+        temperature_mk_map = np.full(
+            (config.image_ny, config.image_nx),
+            config.temperature_mk,
+            dtype=np.float64,
+        )
+        background_source_kind = "constant"
     active_energy = particles.kinetic_energy_ev[
         (particles.status == 0) & (particles.kinetic_energy_ev > 0.0)
     ]
@@ -417,6 +445,14 @@ def run_simple_emission(config: SimpleEmissionConfig) -> tuple[Path, Path]:
     nnth_bins = _quantize(nnth_norm, config.nonthermal_density_bins)
     b_bins = _quantize(b_norm, config.magnetic_field_bins)
     delta_bins = _quantize(delta_norm, config.power_law_index_bins)
+    nth_norm = (
+        thermal_density_map - np.min(thermal_density_map)
+    ) / max(np.ptp(thermal_density_map), 1.0e-12)
+    temp_norm = (
+        temperature_mk_map - np.min(temperature_mk_map)
+    ) / max(np.ptp(temperature_mk_map), 1.0e-12)
+    nth_bins = _quantize(nth_norm, config.thermal_density_bins)
+    temp_bins = _quantize(temp_norm, config.temperature_bins)
 
     reference_flux_cubes = {
         "thermal_only": np.zeros_like(total_flux_cube),
@@ -437,22 +473,28 @@ def run_simple_emission(config: SimpleEmissionConfig) -> tuple[Path, Path]:
 
     convolved_total_flux_cube = np.zeros_like(total_flux_cube)
     convolved_circular_flux_cube = np.zeros_like(circular_flux_cube)
-    spectral_cache: dict[tuple[int, int, int], dict[str, object]] = {}
+    spectral_cache: dict[tuple[int, int, int, int, int], dict[str, object]] = {}
     for iy in range(config.image_ny):
         for ix in range(config.image_nx):
             if not occupied[iy, ix]:
                 continue
 
-            cache_key = (int(nnth_bins[iy, ix]), int(b_bins[iy, ix]), int(delta_bins[iy, ix]))
+            cache_key = (
+                int(nnth_bins[iy, ix]),
+                int(b_bins[iy, ix]),
+                int(delta_bins[iy, ix]),
+                int(nth_bins[iy, ix]),
+                int(temp_bins[iy, ix]),
+            )
             if cache_key not in spectral_cache:
                 parameters = MicrowaveSourceParameters(
                     nonthermal_density_1e7_cm3=nonthermal_density_map[iy, ix] / 1.0e7,
                     magnetic_field_100g=magnetic_field_map[iy, ix] / 100.0,
                     viewing_angle_deg=config.viewing_angle_deg,
-                    thermal_density_1e9_cm3=config.thermal_density_cm3 / 1.0e9,
+                    thermal_density_1e9_cm3=thermal_density_map[iy, ix] / 1.0e9,
                     power_law_index=power_law_index_map[iy, ix],
                     maximum_energy_mev=config.maximum_energy_mev,
-                    temperature_mk=config.temperature_mk,
+                    temperature_mk=temperature_mk_map[iy, ix],
                     minimum_energy_mev=config.minimum_energy_mev,
                     pixel_area_arcsec2=pixel_area_arcsec2,
                     los_depth_arcsec=config.los_depth_arcsec,
@@ -568,6 +610,8 @@ def run_simple_emission(config: SimpleEmissionConfig) -> tuple[Path, Path]:
         "cell": {
             "deposited_weight": weight_map,
             "nonthermal_density_cm3": nonthermal_density_map,
+            "thermal_density_cm3": thermal_density_map,
+            "temperature_mk": temperature_mk_map,
             "magnetic_field_gauss": magnetic_field_map,
             "power_law_index": power_law_index_map,
             "power_law_fit_r_squared": power_law_r_squared_map,
@@ -631,10 +675,10 @@ def run_simple_emission(config: SimpleEmissionConfig) -> tuple[Path, Path]:
     write_emission_product(
         output_hdf5,
         EmissionHdf5Metadata(
-            frame_id=180,
+            frame_id=config.frame_id,
             transport_model=config.transport_model,
             field_source_kind="file",
-            background_source_kind="constant",
+            background_source_kind=background_source_kind,
         ),
         payload,
     )

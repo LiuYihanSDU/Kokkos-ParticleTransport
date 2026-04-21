@@ -2,3 +2,4 @@ numpy
 h5py
 matplotlib
 streamlit
+imageio-ffmpeg

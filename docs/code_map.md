@@ -41,10 +41,10 @@ not the intended final design.
   `mhd_data_NNNN` binary frames to the compact Kokkos background-field binary format.
 - `apps/plot_reconnection_benchmark_spectra.py`: Python post-processing script that
   reads the three-case reconnection benchmark outputs and plots every-10-frame spectra
-  in Fortran, Kokkos CUDA, and Kokkos CPU panels.
+  as kinetic-energy spectra in LiXiaocan GPAT, Kokkos-CPU, and Kokkos-GPU panels.
 - `apps/plot_reconnection_timing.py`: Python post-processing script that reads the
   three-case reconnection timing outputs and plots frame time versus particle count plus
-  accumulated runtime versus frame number.
+  accumulated runtime versus physical frame time.
 - `apps/particle_binary_to_xdmf_hdf5.py`: Python converter from the repository
   particle binary snapshot format to ParaView-readable HDF5 plus XDMF Polyvertex data.
 - `particleEmission/EmissionTypes.hpp`: emission workflow common enums and value
@@ -127,6 +127,13 @@ not the intended final design.
   CPU/CUDA Kokkos executables and then runs the Fortran, Kokkos CUDA, and Kokkos CPU
   reconnection cases sequentially with separate output directories, log files, and
   post-processing plots.
+- `scripts/run_total_benchmark_suite_local.sh`: extracted local benchmark-suite driver
+  that runs the Kokkos-particleTransport three-way benchmark first, then the AMRVAC
+  native NLFFF versus AthenaK CT-NLFFF benchmark, and records the suite log plus
+  manifest under one benchmark root.
+- `scripts/run_total_benchmark_suite.sh`: compatibility entry point that forwards to
+  `scripts/run_total_benchmark_suite_local.sh` so existing launch commands still work
+  without the old built-in email wrapper.
 - `scripts/run_reconnection_optimized_comparison.sh`: Parker comparison wrapper that
   defaults to AVX512 Fortran, optimized Kokkos CPU, Kokkos CUDA, and automatic spectra
   plus timing plots.
@@ -139,6 +146,9 @@ not the intended final design.
 - `scripts/run_local_parker_focused_speed_accuracy_test.sh`: local benchmark wrapper
   that runs Parker then focused three-way comparisons, prepares a post-processing Python
   environment when needed, and writes timing plus spectrum-difference summaries.
+- `scripts/run_with_email_notification.sh`: GPT-independent command wrapper that records
+  stdout/stderr to a log file and sends a completion email through local sendmail or
+  Python standard-library SMTP.
 - `scripts/validate_reconnection_dt_match.sh`: host-side validation helper that checks
   Kokkos summary times against the Fortran MHD `mhd_config.dat` `dt_out` value and
   verifies that the expected compact-field and particle snapshot frames exist, while
@@ -281,6 +291,9 @@ apps/plot_reconnection_benchmark_spectra.py
   -> benchmark_runs/reconnection_200/kokkos_cpu/momentum_histogram_NNNNN.csv
   -> benchmark_runs/reconnection_200/reconnection_spectra_panels.png
   -> benchmark_runs/reconnection_200/reconnection_spectra.csv
+  -> momentum-to-energy mapping with p0 and p0-energy-keV controls
+  -> optional kinetic-energy x-axis limits through --energy-x-min and --energy-x-max
+  -> physical colorbar time through --frame-interval-seconds
 
 apps/plot_reconnection_timing.py
   -> Python 3
@@ -291,6 +304,7 @@ apps/plot_reconnection_timing.py
   -> benchmark_runs/reconnection_200/kokkos_cpu/summary.csv
   -> benchmark_runs/reconnection_200/reconnection_timing_panels.png
   -> benchmark_runs/reconnection_200/reconnection_timing.csv
+  -> physical accumulated-runtime x-axis through --frame-interval-seconds
 
 scripts/run_reconnection_three_cases.sh
   -> cmake configure/build for CPU and CUDA benchmark build directories
@@ -302,6 +316,15 @@ scripts/run_reconnection_three_cases.sh
   -> benchmark_runs/reconnection_200/compact_field by default for Kokkos compact field inputs
   -> /home/liuyh/data/Athena++/athena_reconnection_test/bin_data by default for Fortran MHD inputs
   -> benchmark_runs/reconnection_200/{fortran,kokkos_gpu,kokkos_cpu,compact_field}
+
+scripts/run_total_benchmark_suite.sh
+  -> scripts/run_total_benchmark_suite_local.sh
+
+scripts/run_total_benchmark_suite_local.sh
+  -> scripts/run_reconnection_three_cases.sh for the KPT three-way benchmark
+  -> /home/liuyh/CLionProjects/amrvac_nlfff_sphere/scripts/run_nlfff_compare_case.sh
+     for the AMRVAC/AthenaK NLFFF benchmark
+  -> benchmark_runs/combined_benchmark_YYYYMMDD_HHMMSS by default
 
 scripts/run_reconnection_optimized_comparison.sh
   -> scripts/run_reconnection_three_cases.sh
@@ -360,6 +383,14 @@ scripts/run_kokkos_cpu_parker_movie_pipeline.sh
   -> cmake-build-benchmark-cpu/kokkos_particle_transport_app
   -> particleEmission.parker_emission_movie
   -> benchmark_runs/kokkos_cpu_parker_movie_YYYYMMDD_HHMMSS by default
+
+scripts/run_with_email_notification.sh
+  -> any shell command passed after --
+  -> Python 3 standard library email/smtplib/gzip modules
+  -> optional local sendmail command when present
+  -> SMTP settings from KPT_NOTIFY_* environment variables
+  -> optional KPT_NOTIFY_SMTP_CONNECT_HOST override for DNS-proxied SMTP networks
+  -> benchmark_runs/email_notifications by default for wrapper logs
 
 CMakePresets.json
   -> configure preset linux-kokkos-cpu-debug
@@ -594,7 +625,9 @@ PhysicalConstant
   - omits `src/header_smoke.cpp` from the CUDA app so the runnable GPU calibration path
     is not blocked by CPU-only smoke coverage;
   - adds `run_reconnection_smoke`, `run_reconnection_particle_64000`, and
-    `run_reconnection_fortran_global` custom targets for one-click local runs;
+    `run_reconnection_fortran_global` custom targets for one-click local runs, passing
+    `--overwrite-output` explicitly so repeated IDE smoke/calibration targets remain
+    rerunnable under the solver's output-directory overwrite guard;
   - adds `run_reconnection_three_cases_200`, which invokes the top-level benchmark shell
     script for the sequential Fortran, Kokkos CUDA, and Kokkos CPU 200-frame run.
 - Current notes:
@@ -666,6 +699,9 @@ PhysicalConstant
     scaling, particle capacity, diagnostics cadence, random seed, MHD output cadence,
     splitting, focused pitch-angle controls, time interpolation, and optional walltime
     stopping controls;
+  - exposes split-threshold controls through `--split-ratio` and
+    `--pmin-split-over-p0`, matching the Fortran benchmark wrapper's `-sr` and `-ps`
+    controls;
   - loads `fieldNNNNN.bin` files through `AthenaFieldReader.hpp` as uniform analytic
     x/y grids with periodic boundaries and two ghost cells;
   - precomputes a legacy 16-component Parker coefficient field per MHD frame containing
@@ -704,6 +740,9 @@ PhysicalConstant
     with total elapsed time, momentum histogram CSV files for comparison with Fortran
     diagnostics, and `particles_NNNNN.bin` binary particle snapshots for direct
     particle-cloud analysis;
+  - rejects accidental non-restart overwrites when the requested output directory already
+    contains solver-owned artifacts (`summary.csv`, `run.log`, `particles_*.bin`, or
+    `momentum_histogram_*.csv`), unless `--overwrite-output` is supplied;
   - can restart from a completed-frame `particles_NNNNN.bin` snapshot through
     `--restart-particle-snapshot`, restoring particle position, scalar momentum,
     pitch-angle cosine, weight, lifecycle status, and split level before continuing at
@@ -720,8 +759,8 @@ PhysicalConstant
     - Key data members: profile name, field/output paths, optional restart particle
       snapshot path, frame range, particles per frame, rank scale, capacity, seed,
       diagnostic cadence, histogram cadence, particle snapshot cadence, transport model,
-      split/time-interpolation switches, walltime limit/reserve seconds, MHD `dt_out`,
-      `p0`, `pmin`, `pmax`,
+      split/time-interpolation switches, overwrite-output switch, walltime
+      limit/reserve seconds, MHD `dt_out`, `p0`, `pmin`, `pmax`,
       `gamma_turb`, `kpara0`, `kret`, `dt_min_rel`, `dt_max_rel`, drift parameters,
       charge, `particle_v0`, `duu0`, `mu_max`, and splitting thresholds.
     - Execution-space assumptions: host-only parsing and validation.
@@ -781,6 +820,14 @@ PhysicalConstant
       `particles_NNNNN.bin`.
     - Call points: used by `parse_settings` so `--restart-particle-snapshot` can infer
       `start_frame` when no explicit `--start-frame` is supplied.
+  - `is_reconnection_output_artifact` / `output_directory_has_reconnection_outputs` /
+    `require_fresh_output_directory`
+    - Role: host-side overwrite guard for non-restart runs.
+    - Protected artifacts: `summary.csv`, `run.log`, `particles_*.bin`, and
+      `momentum_histogram_*.csv` in the selected output directory.
+    - Call points: `run` invokes the guard before creating or opening output files;
+      restart runs append/continue, and explicit `--overwrite-output` fresh runs bypass
+      the guard.
   - `load_reconnection_particle_snapshot`
     - Role: reads a version-4 repository particle binary snapshot into
       `ReconnectionParticleStorage` for frame-boundary restart.
@@ -983,10 +1030,14 @@ PhysicalConstant
   - converts all cases to `dN/dlog10(p)` using the stored logarithmic momentum-bin
     edges;
   - writes a combined CSV table and a three-panel Matplotlib figure using the `plasma`
-    colormap to encode increasing frame number;
-  - fixes the momentum x-axis to dense 1-2-5 logarithmic ticks spanning all loaded
-    spectra so each panel has readable tick labels instead of relying on Matplotlib's
-    sparse automatic log ticks.
+    colormap to encode increasing physical frame time;
+  - converts transport momentum to kinetic energy in keV using
+    `E_keV=(sqrt(1+p^2)-1)/(sqrt(1+p0^2)-1)*E0_keV`, defaulting to
+    `p0=0.1` and `E0_keV=1.0`;
+  - fixes the energy x-axis to dense 1-2-5 logarithmic ticks spanning all loaded
+    spectra, or to explicit `--energy-x-min`/`--energy-x-max` limits when supplied,
+    so each panel has readable tick labels instead of relying on Matplotlib's sparse
+    automatic log ticks.
 - Current notes:
   - the script expects `h5py`, `matplotlib`, and `numpy` in the Python environment;
   - it is intentionally not wired into CMake because it is an interactive analysis step
@@ -1001,9 +1052,10 @@ PhysicalConstant
   - reads Kokkos CPU and GPU frame timing, accumulated timing, and active particle counts
     from each case's `summary.csv`;
   - writes a combined timing CSV with columns `case`, `frame`, `particle_count`,
-    `frame_seconds`, and `elapsed_seconds`;
+    `physical_time_seconds`, `frame_seconds`, and `elapsed_seconds`;
   - writes a two-panel Matplotlib figure where the first panel plots frame time against
-    particle count and the second panel plots accumulated runtime against frame number;
+    particle count and the second panel plots accumulated runtime against physical
+    simulation time;
   - keeps one fixed color per solver across both timing panels.
 - Current notes:
   - the script expects `matplotlib` and `numpy` in the Python environment;
@@ -1086,11 +1138,17 @@ PhysicalConstant
     MHD data by default, unless `KPT_FIELD_DIR` is provided;
   - creates a benchmark-local Fortran configuration file derived from the example
     `conf_reconnection.dat` and patches the calibration diffusion parameters;
+  - prepares both `fortran/restart` and benchmark-root `restart` directories before the
+    Fortran reference launch so MT-stream PRNG state dumps can be written reliably in the
+    benchmark workspace;
   - passes `-ft .true.` to the Fortran executable and `--transport focused` to the
     Kokkos executable for focused-transport runs;
   - exposes a walltime interface for scheduler-limited runs: Fortran receives
     `-qh ${KPT_FORTRAN_WALLTIME_HOURS}` and Kokkos receives
     `--walltime-hours/--walltime-reserve-minutes` when a Kokkos walltime is configured;
+  - exposes particle splitting thresholds through `KPT_SPLIT_RATIO` and
+    `KPT_PMIN_SPLIT_OVER_P0`, forwarding them to both the Fortran and Kokkos command
+    lines;
   - runs the Fortran reference case, Kokkos CUDA case, and Kokkos CPU case in that order;
   - limits the default CPU budget to `16` cores through `KPT_CPU_CORES`, using that value
     for build parallelism, Fortran MPI rank count, and Kokkos CPU thread count unless
@@ -1111,7 +1169,9 @@ PhysicalConstant
     after completion;
   - runs `apps/plot_reconnection_benchmark_spectra.py` and
     `apps/plot_reconnection_timing.py` after all three cases complete, unless
-    `KPT_SKIP_POSTPROCESS=1`.
+    `KPT_SKIP_POSTPROCESS=1`;
+  - sets the default post-processed energy-spectrum x-axis to `0.05`-`20` keV for
+    the three-case comparison figure.
 - Current notes:
   - defaults match the Fortran-global calibration count: `1600` injected particles per
     MPI rank, `16` ranks, and `200` frames;
@@ -1126,6 +1186,8 @@ PhysicalConstant
   - `KPT_PARTICLE_SNAPSHOT_INTERVAL=0` disables Kokkos particle snapshots, while any
     positive value writes snapshots at that frame cadence and always includes the final
     frame;
+  - `KPT_RECONNECTION_FRAME_SECONDS` supplies the physical frame interval used by the
+    spectra colorbar and accumulated-runtime x-axis;
   - `KPT_WALLTIME_HOURS` sets a common scheduler-style walltime for Fortran and Kokkos;
     `KPT_FORTRAN_WALLTIME_HOURS` overrides the Fortran `-qh` value and defaults to
     `12.0` hours when no common walltime is set; `KPT_KOKKOS_WALLTIME_HOURS` enables
@@ -1248,6 +1310,76 @@ PhysicalConstant
     `KPT_RECONNECTION_L0_M`, `KPT_RECONNECTION_B0_G`, and
     `KPT_RECONNECTION_N0_CM3` control the reported Alfvén-time conversion.
 
+### scripts/run_with_email_notification.sh
+
+- GPT-independent long-job notification wrapper.
+- Current responsibilities:
+  - runs any command supplied after `--` without requiring modifications to that command;
+  - writes stdout/stderr plus command metadata to a selected log file;
+  - preserves the wrapped command's exit code as the wrapper exit code by default;
+  - sends an immediate `STARTED` email when the command begins;
+  - sends periodic `RUNNING` status emails while the command is still active, defaulting
+    to a 12-hour cadence and including the next automatic status time in every status
+    email;
+  - sends a final completion email with host, command, start/end times, duration, exit
+    status, log path, tail lines, and an optional log attachment;
+  - uses a local `sendmail` command when available, otherwise sends through SMTP using
+    only the Python standard library.
+- Current notes:
+  - this workstation currently has Python 3 but no detected `sendmail`, `mail`,
+    `mailx`, or `msmtp`, so practical use requires `KPT_NOTIFY_SMTP_HOST`,
+    `KPT_NOTIFY_TO`, and the corresponding SMTP credential variables;
+  - `KPT_NOTIFY_TO` defaults to `liu-yh@outlook.com` for this workstation;
+  - when local DNS maps SMTP hosts to a proxy address, `KPT_NOTIFY_SMTP_CONNECT_HOST`
+    can point at the real SMTP IP while `KPT_NOTIFY_SMTP_HOST` remains the TLS SNI and
+    certificate host;
+  - SMTP passwords should be provided through `KPT_NOTIFY_SMTP_PASSWORD_FILE` when
+    possible, so credentials are not embedded in shell history or command lines;
+  - `--dry-run-email` builds and prints the email payload without connecting to SMTP,
+    which is the preferred local syntax test path;
+  - `--status-interval-hours` or `KPT_NOTIFY_STATUS_INTERVAL_HOURS` controls the
+    periodic status cadence; setting it to `0` disables periodic status emails while
+    keeping start and final notifications;
+  - `KPT_NOTIFY_SMTP_TIMEOUT_SECONDS` bounds SMTP connection attempts so notification
+    failures do not indefinitely stall wrapper bookkeeping;
+  - large logs are attached only up to `KPT_NOTIFY_ATTACH_MAX_MB`; the email body always
+    includes the configured log tail.
+
+### scripts/run_total_benchmark_suite.sh
+
+- Thin compatibility launcher for the suite driver.
+- Current responsibilities:
+  - forwards all arguments directly to `scripts/run_total_benchmark_suite_local.sh`;
+  - preserves the long-standing entry-point path used by existing terminal history,
+    notes, and automation.
+
+### scripts/run_total_benchmark_suite_local.sh
+
+- Top-level benchmark suite driver.
+- Current responsibilities:
+  - computes the reconnection physical frame interval from the Fortran MHD
+    `mhd_config.dat` `dt_out` and the same Alfvén-time normalization used by
+    `scripts/validate_reconnection_dt_match.sh`;
+  - runs the Kokkos-particleTransport three-way reconnection benchmark under
+    `benchmark_runs/combined_benchmark_YYYYMMDD_HHMMSS/kpt_reconnection_three_way`;
+  - mirrors the full suite stdout/stderr into `combined_benchmark_suite.log` through a
+    process-substitution `tee` so local runs still leave a single suite-level log file;
+  - configures that particle benchmark with every-10-frame spectra, `KPT_SPLIT_RATIO=1.2`
+    by default, and disabled particle snapshots for the speed/spectrum run;
+  - runs `/home/liuyh/CLionProjects/amrvac_nlfff_sphere/scripts/run_nlfff_compare_case.sh`
+    with the benchmark contract described by that repository's `benchmark0419.md`;
+  - writes `combined_benchmark_manifest.txt` with the suite entry script, suite log,
+    particle benchmark root, NLFFF run directory, frame interval, and current/final
+    status.
+- Current notes:
+  - `--no-email` is accepted as a no-op compatibility flag so older launch snippets do
+    not fail after the notification wrapper was removed from the suite entry path;
+  - `KPT_SUITE_ROOT`, `KPT_SUITE_PARTICLE_ROOT`, `KPT_NLFFF_BENCHMARK_ROOT`, and
+    `KPT_NLFFF_RUN_NAME` can redirect the two benchmark output locations;
+  - AMRVAC/AthenaK controls such as `NP`, `NITER`, `MF_DIAG_INTERVAL`,
+    `OUTPUT_DCYCLE`, `REQUIRE_AVX512`, `CLEAN_AMRVAC_BUILD`, and `CLEAN_ATHENA_BUILD`
+    are forwarded to the NLFFF benchmark script.
+
 ### scripts/run_parker_emission_synthesis.sh
 
 - Parker emission bridge for the current particle-snapshot workflow.
@@ -1289,6 +1421,13 @@ PhysicalConstant
     field and coarse-averages them onto the movie image grid;
   - deposits active particle weights below and above the configured kinetic-energy
     threshold, defaulting to `1.5 keV`;
+  - supports
+    `--energy-source auto|snapshot-kinetic|momentum-kev|transport-p0-kinetic-kev`;
+    the default `auto` mode treats placeholder reconnection snapshots with custom
+    species, `rest_mass=1`, `c=1`, and `energy_scale_erg=1` as relativistic
+    transport-p0 kinetic-energy data using `--transport-p0` and
+    `--transport-p0-energy-kev` instead of applying a bogus CGS kinetic-energy
+    conversion;
   - reconstructs local nonthermal density and a power-law slope approximation from
     weighted particle energy histograms;
   - synthesizes microwave spectra on the requested frequency grid with the local
@@ -1305,9 +1444,12 @@ PhysicalConstant
     environment;
   - the renderer intentionally fails when particle snapshots are missing rather than
     reusing one particle frame across multiple MHD frames;
-  - current reconnection particle snapshots use a placeholder `energy_scale_erg=1.0`,
-    so absolute keV thresholds should be treated as a unit-calibration control until the
-    transport-to-CGS energy normalization is finalized.
+  - current reconnection particle snapshots use placeholder particle metadata, so the
+    renderer's auto energy mode intentionally maps the stored scalar transport `p`
+    through the configured p0 kinetic energy
+    (`E_keV = (sqrt(1+p^2)-1)/(sqrt(1+p0^2)-1) * transport_p0_energy_kev`) for those
+    files; absolute CGS kinetic energies still require a finalized transport-to-CGS
+    normalization.
 
 ### scripts/render_parker_emission_movie.sh
 
@@ -2620,6 +2762,7 @@ PhysicalConstant
     - `TurbulenceProperties(const grid_type& grid, const TurbulencePropertyModel& model, TurbulencePropertyStorageMode requested_storage, const char* label)`
     - `bool stores_fields() const`
     - `Accessor accessor() const`
+    - `void initialize_fields()`
   - `TurbulenceProperties::Accessor`
     - Intended role: device-side read-only accessor for coefficient kernels.
     - Current behavior:
@@ -2630,6 +2773,9 @@ PhysicalConstant
       preserving the same accessor interface for coefficient kernels.
     - Spatially varying models initialize all stored field points, including ghosted
       points, from cell-centered coordinates.
+    - `initialize_fields()` is public as an implementation helper because CUDA extended
+      lambdas require public enclosing member functions; normal setup should rely on the
+      constructor rather than calling it directly.
     - The current derivative fields are radial derivatives because the active model is
       radial. General mapped coordinate gradients should be added when a non-radial
       turbulence model is introduced.
@@ -2800,6 +2946,7 @@ PhysicalConstant
     - `void apply_curvilinear_momentum_correction(CorrectionFunctor correction_functor)`
     - `void write_binary_snapshot(const std::string& file_path) const`
     - `static ParticleSystem read_binary_snapshot(const std::string& file_path, size_type minimum_capacity, const char* label)`
+    - `void initialize_default_state()`
   - Current notes:
     - The container currently supports one particle species per `ParticleSystem`.
       Multi-species transport should be represented by separate solver runs or a future
@@ -2859,6 +3006,10 @@ PhysicalConstant
       trajectory. Active particles that leave non-periodic grid bounds are marked as
       `Escaped`; recycling is handled by particle injection utilities because injection
       distributions and kinematics are solver-policy decisions.
+    - `initialize_default_state()` is public as a constructor-time implementation helper
+      because CUDA extended lambdas require public enclosing member functions; callers
+      should not use it to reset a live simulation unless they intentionally want to
+      overwrite all particle state.
 
 ### include/ParticleSystemDebugger.hpp
 
@@ -2980,6 +3131,7 @@ PhysicalConstant
     - `random_manager_type = RandomManager<DeviceType>`
     - `stochastic_sampler_type = StochasticSampler<DeviceType>`
     - `coefficient_field_set_type = ParkerCoefficient::TransportCoefficientFieldSet<grid_type, layout_type>`
+    - `packed_coefficient_field_type = Field<grid_type, packed_component_count, layout_type>`
     - `debug_terms_type = ParkerDeterministicParticleTerms<GridType::space_dim, VecDim>`
   - Current visible call points:
     - Constructor:
@@ -2988,6 +3140,9 @@ PhysicalConstant
       - `ParkerSolver(particle_system_type input_particles, grid_type input_grid, vector_field_type input_B_vec, vector_field_type input_V_body)`
       - `ParkerSolver(particle_system_type input_particles, grid_type input_grid, vector_field_type input_B_vec, vector_field_type input_V_body, coefficient_field_set_type input_coefficients)`
     - `void set_coefficient_fields(coefficient_field_set_type input_coefficients)`
+    - `void set_use_packed_coefficient_basis(bool enabled)`
+    - `bool packed_coefficient_basis_enabled() const`
+    - `void rebuild_packed_coefficient_basis()`
     - `KOKKOS_INLINE_FUNCTION void initializer()`
     - `KOKKOS_INLINE_FUNCTION void operator()(int i) const`
     - `double compute_adaptive_time_step() const`
@@ -3000,6 +3155,21 @@ PhysicalConstant
     - Uses precomputed coefficient fields from `ParkerCoefficient::TransportCoefficientFieldSet`.
     - Validates that solver-consumed coefficient fields are configured and share the
       same ghosted storage domain and centering as `V_body`.
+    - Uses the packed spatial-basis path by default on all execution backends. It can
+      still be disabled explicitly through `set_use_packed_coefficient_basis(false)`.
+      The packed field stores `B`, `V_sw`, `curl(B/B^2)`, primary and secondary diffusion
+      divergence bases, `kappa_parallel_gamma_one`, `kappa_perpendicular_gamma_one`,
+      and `div(V_sw)` in one multi-component `Field` so particle kernels can sample
+      those basis quantities with one position interpolation. Particle-specific gamma,
+      momentum, charge, and drift prefactors remain evaluated in registers.
+    - Kernel-launch implementation helpers are public because CUDA extended lambdas
+      require public enclosing member functions. External code should prefer the
+      high-level stepping API and use lower-level helpers only for tests or diagnostics.
+    - Constructors that receive a configured coefficient set build the packed field
+      immediately. `rebuild_packed_coefficient_basis()` refreshes the packed field from
+      the currently assigned coefficient set. `set_coefficient_fields()` also rebuilds
+      it when the packed path is enabled; callers that mutate coefficient field
+      contents in place must rebuild explicitly before using the packed path.
     - Particle updates use
       `dX/dt = V_sw + V_d + div(kappa)` and
       `dp/dt = -(p / 3) div(V_sw)`.
@@ -3094,14 +3264,20 @@ PhysicalConstant
     - `coefficient_field_set_type = FocusCoefficient::TransportCoefficientFieldSet<grid_type, layout_type>`
     - `random_manager_type = RandomManager<DeviceType>`
     - `stochastic_sampler_type = StochasticSampler<DeviceType>`
+    - `packed_coefficient_field_type = Field<grid_type, packed_component_count, layout_type>`
     - `debug_terms_type = FocusTransportParticleTerms<GridType::space_dim, VecDim>`
   - Current visible members:
     - `coefficient_field_set_type coefficients`
+    - `packed_coefficient_field_type packed_coefficient_basis`
+    - `bool use_packed_coefficient_basis`
     - `double maximum_pitch_angle_cosine`
   - Current visible call points:
     - constructors matching the Parker solver pattern, with optional particle system and
       optional coefficient field set;
     - `void set_coefficient_fields(coefficient_field_set_type input_coefficients)`
+    - `void set_use_packed_coefficient_basis(bool enabled)`
+    - `bool packed_coefficient_basis_enabled() const`
+    - `void rebuild_packed_coefficient_basis()`
     - `void set_maximum_pitch_angle_cosine(double input_maximum_mu)`
     - `double compute_adaptive_time_step() const`
     - `double advance_deterministic()`
@@ -3111,6 +3287,23 @@ PhysicalConstant
     - Implements focused-transport deterministic stepping and Euler-Maruyama stochastic
       stepping for `X`, scalar momentum magnitude `p`, and pitch-angle cosine `mu`.
     - Uses precomputed fields from `FocusCoefficient::TransportCoefficientFieldSet`.
+    - Uses the packed spatial-basis path by default on all execution backends. It can
+      still be disabled explicitly through `set_use_packed_coefficient_basis(false)`.
+      The packed field stores `B`, precomputed `b`, `V_sw`, gradient and curvature drift bases,
+      perpendicular diffusion advection basis, `|B|`,
+      `kappa_parallel_gamma_one`, `kappa_perpendicular_gamma_one`, `div(V_sw)`,
+      magnetic focusing, `bb:grad(V_sw)`, `b dot dV_sw/dt`, scattering `sigma2`, and
+      scattering correlation length in one multi-component `Field`. Particle-specific
+      `p`, `mu`, gamma factors, drift prefactors, and `D_mumu` are still evaluated
+      after interpolation.
+    - Kernel-launch implementation helpers are public because CUDA extended lambdas
+      require public enclosing member functions. External code should prefer the
+      high-level stepping API and use lower-level helpers only for tests or diagnostics.
+    - Constructors that receive a configured coefficient set build the packed field
+      immediately. `rebuild_packed_coefficient_basis()` refreshes the packed field from
+      the currently assigned coefficient set. `set_coefficient_fields()` also rebuilds
+      it when the packed path is enabled; callers that mutate coefficient field
+      contents in place must rebuild explicitly before using the packed path.
     - Spatial advection is assembled as
       `v mu b + V_sw + V_d + div(kappa_perp)`.
     - Focused drift uses the README gradient/curvature form:

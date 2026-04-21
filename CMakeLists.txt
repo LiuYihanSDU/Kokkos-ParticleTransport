@@ -111,6 +111,7 @@ add_custom_target(run_reconnection_smoke
           --profile smoke
           --field-dir "${KPT_RECONNECTION_PARTICLE_FIELD_DIR}"
           --output-dir "${KPT_RECONNECTION_OUTPUT_ROOT}/smoke"
+          --overwrite-output
   DEPENDS kokkos_particle_transport_app
   WORKING_DIRECTORY "${PROJECT_SOURCE_DIR}"
   USES_TERMINAL
@@ -124,6 +125,7 @@ add_custom_target(run_reconnection_particle_64000
           --profile particle-64000
           --field-dir "${KPT_RECONNECTION_PARTICLE_FIELD_DIR}"
           --output-dir "${KPT_RECONNECTION_OUTPUT_ROOT}/particle_64000"
+          --overwrite-output
   DEPENDS kokkos_particle_transport_app
   WORKING_DIRECTORY "${PROJECT_SOURCE_DIR}"
   USES_TERMINAL
@@ -137,6 +139,7 @@ add_custom_target(run_reconnection_fortran_global
           --profile fortran-global
           --field-dir "${KPT_RECONNECTION_FULL_FIELD_DIR}"
           --output-dir "${KPT_RECONNECTION_OUTPUT_ROOT}/fortran_global"
+          --overwrite-output
   DEPENDS kokkos_particle_transport_app
   WORKING_DIRECTORY "${PROJECT_SOURCE_DIR}"
   USES_TERMINAL

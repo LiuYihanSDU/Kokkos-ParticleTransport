@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Plot every-10-frame reconnection spectra for Fortran, Kokkos CUDA, and Kokkos CPU."""
+"""Plot every-N-frame reconnection energy spectra for the three benchmark solvers."""
 
 from __future__ import annotations
 
@@ -63,6 +63,24 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--frame-end", type=int, default=200)
     parser.add_argument("--frame-step", type=int, default=10)
     parser.add_argument(
+        "--frame-interval-seconds",
+        type=float,
+        default=1.0,
+        help="Physical seconds per MHD output frame for the colorbar labels.",
+    )
+    parser.add_argument(
+        "--p0",
+        type=float,
+        default=0.1,
+        help="Transport reference momentum corresponding to --p0-energy-kev.",
+    )
+    parser.add_argument(
+        "--p0-energy-kev",
+        type=float,
+        default=1.0,
+        help="Kinetic energy in keV assigned to p0 for the transport momentum scale.",
+    )
+    parser.add_argument(
         "--output",
         type=Path,
         default=None,
@@ -73,6 +91,18 @@ def parse_args() -> argparse.Namespace:
         type=Path,
         default=None,
         help="Output combined spectrum CSV. Defaults to ROOT/reconnection_spectra.csv.",
+    )
+    parser.add_argument(
+        "--energy-x-min",
+        type=float,
+        default=None,
+        help="Optional lower kinetic-energy axis limit in keV.",
+    )
+    parser.add_argument(
+        "--energy-x-max",
+        type=float,
+        default=None,
+        help="Optional upper kinetic-energy axis limit in keV.",
     )
     return parser.parse_args()
 
@@ -161,6 +191,8 @@ def write_combined_csv(
     cases: list[CaseConfig],
     frames: list[int],
     spectra: dict[tuple[str, int], Spectrum],
+    p0: float,
+    p0_energy_kev: float,
 ) -> None:
     output_path.parent.mkdir(parents=True, exist_ok=True)
     with output_path.open("w", newline="") as stream:
@@ -172,8 +204,12 @@ def write_combined_csv(
                 "p_left",
                 "p_right",
                 "p_center",
+                "energy_left_kev",
+                "energy_right_kev",
+                "energy_center_kev",
                 "weight",
                 "dndlog10p",
+                "dndlog10e",
             ]
         )
         for case in cases:
@@ -181,12 +217,35 @@ def write_combined_csv(
                 spectrum = spectra.get((case.name, frame))
                 if spectrum is None:
                     continue
-                for p_left, p_right, p_center, weight, dndlog10p in zip(
+                energy_left = kinetic_energy_kev_from_p(
+                    spectrum.p_left, p0, p0_energy_kev
+                )
+                energy_right = kinetic_energy_kev_from_p(
+                    spectrum.p_right, p0, p0_energy_kev
+                )
+                energy_center = np.sqrt(energy_left * energy_right)
+                dlog10e = np.log10(energy_right) - np.log10(energy_left)
+                dndlog10e = spectrum.weight / dlog10e
+                for (
+                    p_left,
+                    p_right,
+                    p_center,
+                    e_left,
+                    e_right,
+                    e_center,
+                    weight,
+                    dndlog10p,
+                    dnde,
+                ) in zip(
                     spectrum.p_left,
                     spectrum.p_right,
                     spectrum.p_center,
+                    energy_left,
+                    energy_right,
+                    energy_center,
                     spectrum.weight,
                     spectrum.dndlog10p,
+                    dndlog10e,
                     strict=True,
                 ):
                     writer.writerow(
@@ -196,8 +255,12 @@ def write_combined_csv(
                             f"{p_left:.16e}",
                             f"{p_right:.16e}",
                             f"{p_center:.16e}",
+                            f"{e_left:.16e}",
+                            f"{e_right:.16e}",
+                            f"{e_center:.16e}",
                             f"{weight:.16e}",
                             f"{dndlog10p:.16e}",
+                            f"{dnde:.16e}",
                         ]
                     )
 
@@ -209,46 +272,103 @@ def compact_tick_label(value: float) -> str:
     return f"{value:.3g}"
 
 
-def momentum_axis_ticks(
-    spectra: dict[tuple[str, int], Spectrum],
-) -> tuple[float, float, list[float], list[str]]:
-    """Return dense 1-2-5 momentum ticks covering all spectra."""
-    p_left_values: list[np.ndarray] = []
-    p_right_values: list[np.ndarray] = []
-    for spectrum in spectra.values():
-        p_left_values.append(spectrum.p_left[np.isfinite(spectrum.p_left)])
-        p_right_values.append(spectrum.p_right[np.isfinite(spectrum.p_right)])
-    if not p_left_values or not p_right_values:
-        return 1.0e-2, 1.0e1, [1.0e-2, 1.0e-1, 1.0, 1.0e1], [
-            "0.01",
-            "0.1",
-            "1",
-            "10",
-        ]
+def display_case_name(case_name: str) -> str:
+    """Return the panel label for a canonical benchmark case name."""
+    labels = {
+        "Fortran": "LiXiaocan GPAT",
+        "Kokkos CPU": "Kokkos-CPU",
+        "Kokkos GPU": "Kokkos-GPU",
+    }
+    return labels.get(case_name, case_name)
 
-    p_min = min(
-        float(values[values > 0.0].min())
-        for values in p_left_values
-        if np.any(values > 0.0)
+
+def kinetic_energy_kev_from_p(
+    momentum: np.ndarray, p0: float, p0_energy_kev: float
+) -> np.ndarray:
+    """Map dimensionless transport momentum to kinetic energy in keV."""
+    if p0 <= 0.0 or p0_energy_kev <= 0.0:
+        raise ValueError("p0 and p0-energy-kev must be positive")
+    reference_energy = np.sqrt(1.0 + p0 * p0) - 1.0
+    if reference_energy <= 0.0:
+        raise ValueError("invalid p0 energy normalization")
+    return (
+        (np.sqrt(1.0 + momentum * momentum) - 1.0)
+        / reference_energy
+        * p0_energy_kev
     )
-    p_max = max(
-        float(values[values > 0.0].max())
-        for values in p_right_values
-        if np.any(values > 0.0)
-    )
-    lower_decade = int(np.floor(np.log10(p_min)))
-    upper_decade = int(np.ceil(np.log10(p_max)))
+
+
+def energy_spectrum_arrays(
+    spectrum: Spectrum, p0: float, p0_energy_kev: float
+) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+    """Return energy-bin left/right/center and dN/dlog10(E_keV)."""
+    energy_left = kinetic_energy_kev_from_p(spectrum.p_left, p0, p0_energy_kev)
+    energy_right = kinetic_energy_kev_from_p(spectrum.p_right, p0, p0_energy_kev)
+    energy_center = np.sqrt(energy_left * energy_right)
+    dlog10e = np.log10(energy_right) - np.log10(energy_left)
+    return energy_left, energy_right, energy_center, spectrum.weight / dlog10e
+
+
+def energy_axis_ticks(
+    spectra: dict[tuple[str, int], Spectrum],
+    p0: float,
+    p0_energy_kev: float,
+    energy_x_min: float | None = None,
+    energy_x_max: float | None = None,
+) -> tuple[float, float, list[float], list[str]]:
+    """Return dense 1-2-5 energy ticks covering all spectra."""
+    if (energy_x_min is None) != (energy_x_max is None):
+        raise ValueError("energy-x-min and energy-x-max must be specified together")
+
+    if energy_x_min is None or energy_x_max is None:
+        left_values: list[np.ndarray] = []
+        right_values: list[np.ndarray] = []
+        for spectrum in spectra.values():
+            energy_left, energy_right, _, _ = energy_spectrum_arrays(
+                spectrum, p0, p0_energy_kev
+            )
+            left_values.append(energy_left[np.isfinite(energy_left)])
+            right_values.append(energy_right[np.isfinite(energy_right)])
+        if not left_values or not right_values:
+            x_min = 1.0e-2
+            x_max = 1.0e1
+        else:
+            x_min = min(
+                float(values[values > 0.0].min())
+                for values in left_values
+                if np.any(values > 0.0)
+            )
+            x_max = max(
+                float(values[values > 0.0].max())
+                for values in right_values
+                if np.any(values > 0.0)
+            )
+    else:
+        if energy_x_min <= 0.0 or energy_x_max <= 0.0:
+            raise ValueError("energy x-axis limits must be positive")
+        if energy_x_max <= energy_x_min:
+            raise ValueError("energy-x-max must be greater than energy-x-min")
+        x_min = energy_x_min
+        x_max = energy_x_max
+
+    if not np.isfinite(x_min) or not np.isfinite(x_max):
+        raise ValueError("energy x-axis limits must be finite")
+
+    lower_decade = int(np.floor(np.log10(x_min)))
+    upper_decade = int(np.ceil(np.log10(x_max)))
     tick_values: list[float] = []
     for exponent in range(lower_decade, upper_decade + 1):
         decade = 10.0**exponent
         for mantissa in (1.0, 2.0, 5.0):
             value = mantissa * decade
-            if p_min <= value <= p_max:
+            if x_min <= value <= x_max:
                 tick_values.append(value)
-    if p_max not in tick_values:
-        tick_values.append(p_max)
+    if x_min not in tick_values:
+        tick_values.insert(0, x_min)
+    if x_max not in tick_values:
+        tick_values.append(x_max)
     tick_labels = [compact_tick_label(value) for value in tick_values]
-    return p_min, p_max, tick_values, tick_labels
+    return x_min, x_max, tick_values, tick_labels
 
 
 def plot_spectra(
@@ -256,12 +376,20 @@ def plot_spectra(
     cases: list[CaseConfig],
     frames: list[int],
     spectra: dict[tuple[str, int], Spectrum],
+    frame_interval_seconds: float,
+    p0: float,
+    p0_energy_kev: float,
+    energy_x_min: float | None,
+    energy_x_max: float | None,
 ) -> None:
     output_path.parent.mkdir(parents=True, exist_ok=True)
     figure, axes = plt.subplots(1, 3, figsize=(18, 5.5), sharex=True, sharey=True)
     cmap = plt.get_cmap("plasma")
-    norm = Normalize(vmin=min(frames), vmax=max(frames))
-    x_min, x_max, x_ticks, x_tick_labels = momentum_axis_ticks(spectra)
+    frame_times = np.asarray(frames, dtype=float) * frame_interval_seconds
+    norm = Normalize(vmin=float(frame_times.min()), vmax=float(frame_times.max()))
+    x_min, x_max, x_ticks, x_tick_labels = energy_axis_ticks(
+        spectra, p0, p0_energy_kev, energy_x_min, energy_x_max
+    )
 
     for axis, case in zip(axes, cases, strict=True):
         plotted = 0
@@ -269,19 +397,22 @@ def plot_spectra(
             spectrum = spectra.get((case.name, frame))
             if spectrum is None:
                 continue
-            valid = np.isfinite(spectrum.dndlog10p) & (spectrum.dndlog10p > 0.0)
+            _, _, energy_center, dndlog10e = energy_spectrum_arrays(
+                spectrum, p0, p0_energy_kev
+            )
+            valid = np.isfinite(dndlog10e) & (dndlog10e > 0.0)
             if not np.any(valid):
                 continue
             axis.loglog(
-                spectrum.p_center[valid],
-                spectrum.dndlog10p[valid],
-                color=cmap(norm(frame)),
+                energy_center[valid],
+                dndlog10e[valid],
+                color=cmap(norm(frame * frame_interval_seconds)),
                 linewidth=1.2,
                 alpha=0.95,
             )
             plotted += 1
-        axis.set_title(case.name)
-        axis.set_xlabel("p")
+        axis.set_title(display_case_name(case.name))
+        axis.set_xlabel("Kinetic energy (keV)")
         axis.set_xlim(x_min, x_max)
         axis.xaxis.set_major_locator(FixedLocator(x_ticks))
         axis.xaxis.set_major_formatter(FixedFormatter(x_tick_labels))
@@ -298,7 +429,7 @@ def plot_spectra(
                 transform=axis.transAxes,
             )
 
-    axes[0].set_ylabel(r"$dN/d\log_{10}p$")
+    axes[0].set_ylabel(r"Particle count $dN/d\log_{10}(E_{\rm keV})$")
     scalar_mappable = plt.cm.ScalarMappable(norm=norm, cmap=cmap)
     colorbar = figure.colorbar(
         scalar_mappable,
@@ -307,8 +438,8 @@ def plot_spectra(
         fraction=0.025,
         pad=0.02,
     )
-    colorbar.set_label("Frame")
-    figure.suptitle("Reconnection Particle Spectra")
+    colorbar.set_label("Physical time (s)")
+    figure.suptitle("Reconnection Particle Energy Spectra")
     figure.savefig(output_path, dpi=200, bbox_inches="tight")
     plt.close(figure)
 
@@ -321,8 +452,8 @@ def main() -> None:
     frames = frame_sequence(args.frame_start, args.frame_end, args.frame_step)
     cases = [
         CaseConfig("Fortran", root / "fortran", "fortran"),
-        CaseConfig("Kokkos CUDA", root / "kokkos_gpu", "kokkos"),
         CaseConfig("Kokkos CPU", root / "kokkos_cpu", "kokkos"),
+        CaseConfig("Kokkos GPU", root / "kokkos_gpu", "kokkos"),
     ]
 
     spectra: dict[tuple[str, int], Spectrum] = {}
@@ -333,8 +464,18 @@ def main() -> None:
             except FileNotFoundError as error:
                 print(f"Missing spectrum file, skipped: {error}")
 
-    write_combined_csv(csv_output, cases, frames, spectra)
-    plot_spectra(output, cases, frames, spectra)
+    write_combined_csv(csv_output, cases, frames, spectra, args.p0, args.p0_energy_kev)
+    plot_spectra(
+        output,
+        cases,
+        frames,
+        spectra,
+        args.frame_interval_seconds,
+        args.p0,
+        args.p0_energy_kev,
+        args.energy_x_min,
+        args.energy_x_max,
+    )
     print(f"Wrote {output}")
     print(f"Wrote {csv_output}")
 

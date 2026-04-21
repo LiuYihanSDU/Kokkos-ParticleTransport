@@ -103,7 +103,45 @@ struct FocusTransportSolver : public SolverBase<GridType, VecDim, DeviceType> {
     static_assert(space_dim <= VecDim,
                   "FocusTransportSolver requires VecDim to cover all coordinate directions.");
 
+    static constexpr int packed_magnetic_field_offset = 0;
+    static constexpr int packed_magnetic_direction_offset =
+        packed_magnetic_field_offset + VecDim;
+    static constexpr int packed_solar_wind_offset =
+        packed_magnetic_direction_offset + VecDim;
+    static constexpr int packed_gradient_drift_basis_offset =
+        packed_solar_wind_offset + VecDim;
+    static constexpr int packed_curvature_drift_basis_offset =
+        packed_gradient_drift_basis_offset + VecDim;
+    static constexpr int packed_perpendicular_diffusion_advection_offset =
+        packed_curvature_drift_basis_offset + VecDim;
+    static constexpr int packed_magnetic_field_magnitude_component =
+        packed_perpendicular_diffusion_advection_offset + VecDim;
+    static constexpr int packed_kappa_parallel_component =
+        packed_magnetic_field_magnitude_component + 1;
+    static constexpr int packed_kappa_perpendicular_component =
+        packed_kappa_parallel_component + 1;
+    static constexpr int packed_solar_wind_divergence_component =
+        packed_kappa_perpendicular_component + 1;
+    static constexpr int packed_magnetic_focusing_component =
+        packed_solar_wind_divergence_component + 1;
+    static constexpr int packed_bb_grad_solar_wind_component =
+        packed_magnetic_focusing_component + 1;
+    static constexpr int packed_convective_derivative_component =
+        packed_bb_grad_solar_wind_component + 1;
+    static constexpr int packed_scattering_sigma2_component =
+        packed_convective_derivative_component + 1;
+    static constexpr int packed_scattering_correlation_length_component =
+        packed_scattering_sigma2_component + 1;
+    static constexpr int packed_component_count =
+        packed_scattering_correlation_length_component + 1;
+    using packed_coefficient_field_type =
+        Field<grid_type, packed_component_count, layout_type>;
+    using packed_value_array_type =
+        Kokkos::Array<double, packed_component_count>;
+
     coefficient_field_set_type coefficients;
+    packed_coefficient_field_type packed_coefficient_basis;
+    bool use_packed_coefficient_basis{true};
     double maximum_pitch_angle_cosine{1.0};
 
     explicit FocusTransportSolver(grid_type input_grid,
@@ -116,7 +154,11 @@ struct FocusTransportSolver : public SolverBase<GridType, VecDim, DeviceType> {
                          vector_field_type input_V_body,
                          coefficient_field_set_type input_coefficients)
         : base_type(input_grid, input_B_vec, input_V_body),
-          coefficients(input_coefficients) {}
+          coefficients(input_coefficients) {
+        if (use_packed_coefficient_basis && coefficients.configured()) {
+            rebuild_packed_coefficient_basis();
+        }
+    }
 
     FocusTransportSolver(particle_system_type input_particles,
                          grid_type input_grid,
@@ -130,13 +172,45 @@ struct FocusTransportSolver : public SolverBase<GridType, VecDim, DeviceType> {
                          vector_field_type input_V_body,
                          coefficient_field_set_type input_coefficients)
         : base_type(input_particles, input_grid, input_B_vec, input_V_body),
-          coefficients(input_coefficients) {}
+          coefficients(input_coefficients) {
+        if (use_packed_coefficient_basis && coefficients.configured()) {
+            rebuild_packed_coefficient_basis();
+        }
+    }
 
     /**
      * Assign precomputed coefficient fields after construction.
      */
     void set_coefficient_fields(coefficient_field_set_type input_coefficients) {
         coefficients = input_coefficients;
+        if (use_packed_coefficient_basis && coefficients.configured()) {
+            rebuild_packed_coefficient_basis();
+        }
+    }
+
+    /**
+     * Enable or disable the packed spatial-basis coefficient path.
+     */
+    void set_use_packed_coefficient_basis(const bool enabled) {
+        use_packed_coefficient_basis = enabled;
+        if (use_packed_coefficient_basis && coefficients.configured()) {
+            rebuild_packed_coefficient_basis();
+        }
+    }
+
+    /**
+     * Return whether the packed spatial-basis coefficient path is enabled.
+     */
+    bool packed_coefficient_basis_enabled() const {
+        return use_packed_coefficient_basis;
+    }
+
+    /**
+     * Rebuild the packed spatial-basis field from the currently assigned coefficients.
+     */
+    void rebuild_packed_coefficient_basis() {
+        validate_spatial_coefficient_fields();
+        packed_coefficient_basis = build_packed_coefficient_basis();
     }
 
     /**
@@ -165,6 +239,9 @@ struct FocusTransportSolver : public SolverBase<GridType, VecDim, DeviceType> {
      */
     double compute_adaptive_time_step() const {
         validate_for_step();
+        if (use_packed_coefficient_basis) {
+            return compute_adaptive_time_step_packed_impl();
+        }
         return compute_adaptive_time_step_impl();
     }
 
@@ -183,7 +260,11 @@ struct FocusTransportSolver : public SolverBase<GridType, VecDim, DeviceType> {
 
         this->dT = typename base_type::dimensionless_value_type(step_dt);
         this->particles.capture_previous_positions();
-        advance_deterministic_impl(step_dt);
+        if (use_packed_coefficient_basis) {
+            advance_deterministic_packed_impl(step_dt);
+        } else {
+            advance_deterministic_impl(step_dt);
+        }
         this->particles.apply_grid_boundary_conditions(this->grid,
                                                        GridDomain::PhysicalDomain);
         return step_dt;
@@ -204,7 +285,11 @@ struct FocusTransportSolver : public SolverBase<GridType, VecDim, DeviceType> {
 
         this->dT = typename base_type::dimensionless_value_type(step_dt);
         this->particles.capture_previous_positions();
-        advance_stochastic_impl(step_dt, random_manager);
+        if (use_packed_coefficient_basis) {
+            advance_stochastic_packed_impl(step_dt, random_manager);
+        } else {
+            advance_stochastic_impl(step_dt, random_manager);
+        }
         this->particles.apply_grid_boundary_conditions(this->grid,
                                                        GridDomain::PhysicalDomain);
         return step_dt;
@@ -269,7 +354,21 @@ private:
                 "FocusTransportSolver: focused drift requires a finite nonzero particle charge.");
         }
         coefficients.pitch_angle_scattering.validate();
+        validate_spatial_coefficient_fields();
+        if (use_packed_coefficient_basis) {
+            validate_field_point_count(packed_coefficient_basis,
+                                       "packed coefficient basis");
+        }
+    }
 
+    /**
+     * Validate fields needed for focused spatial coefficient interpolation.
+     */
+    void validate_spatial_coefficient_fields() const {
+        if (!coefficients.configured()) {
+            throw std::runtime_error(
+                "FocusTransportSolver: coefficient fields are not configured.");
+        }
         validate_field_point_count(this->B_vec, "magnetic field");
         validate_field_point_count(this->V_body, "solar wind velocity");
         validate_field_point_count(coefficients.magnetic_direction, "magnetic direction");
@@ -380,6 +479,116 @@ private:
             centerings[dim] = GridCentering::CellCentered;
         }
         return centerings;
+    }
+
+    /**
+     * Return one vector-valued slice from an interpolated packed basis sample.
+     */
+    KOKKOS_INLINE_FUNCTION
+    static vector_array_type packed_vector(const packed_value_array_type& values,
+                                           const int offset) {
+        vector_array_type result{};
+        for (int component = 0; component < VecDim; ++component) {
+            result[component] = values[offset + component];
+        }
+        return result;
+    }
+
+public:
+    /*
+     * CUDA extended lambdas require the enclosing member function to be public.
+     * Keep kernel-launch implementation helpers public while the user-facing API
+     * remains the small stepping interface above.
+     */
+
+    /**
+     * Build the packed spatial-basis coefficient field.
+     */
+    packed_coefficient_field_type build_packed_coefficient_basis() const {
+        packed_coefficient_field_type packed(
+            this->grid, "focus_packed_coefficient_basis",
+            this->V_body.centerings);
+        const auto magnetic_field = this->B_vec;
+        const auto magnetic_direction = coefficients.magnetic_direction;
+        const auto solar_wind = this->V_body;
+        const auto gradient_drift_basis =
+            coefficients.gradient_drift_basis_over_magnetic_field;
+        const auto curvature_drift_basis =
+            coefficients.curvature_drift_basis_over_magnetic_field;
+        const auto perpendicular_diffusion_advection =
+            coefficients.perpendicular_diffusion_advection_gamma_one;
+        const auto magnetic_field_magnitude =
+            coefficients.magnetic_field_magnitude;
+        const auto kappa_parallel = coefficients.kappa_parallel_gamma_one;
+        const auto kappa_perpendicular =
+            coefficients.kappa_perpendicular_gamma_one;
+        const auto solar_wind_divergence =
+            coefficients.solar_wind_divergence;
+        const auto magnetic_focusing = coefficients.magnetic_focusing;
+        const auto bb_grad_solar_wind = coefficients.bb_grad_solar_wind;
+        const auto convective_derivative =
+            coefficients.b_dot_solar_wind_total_derivative;
+        const auto scattering_sigma2 = coefficients.scattering_sigma2;
+        const auto scattering_correlation_length =
+            coefficients.scattering_correlation_length;
+        auto packed_data = packed.data;
+
+        Kokkos::parallel_for(
+            "FocusTransportSolver::build_packed_coefficient_basis",
+            Kokkos::RangePolicy<execution_space>(0, packed.point_count()),
+            KOKKOS_LAMBDA(
+                const typename packed_coefficient_field_type::size_type
+                    point_index) {
+                for (int component = 0; component < VecDim; ++component) {
+                    packed_data(point_index,
+                                packed_magnetic_field_offset + component) =
+                        magnetic_field(point_index, component);
+                    packed_data(point_index,
+                                packed_magnetic_direction_offset + component) =
+                        magnetic_direction(point_index, component);
+                    packed_data(point_index,
+                                packed_solar_wind_offset + component) =
+                        solar_wind(point_index, component);
+                    packed_data(point_index,
+                                packed_gradient_drift_basis_offset + component) =
+                        gradient_drift_basis(point_index, component);
+                    packed_data(point_index,
+                                packed_curvature_drift_basis_offset + component) =
+                        curvature_drift_basis(point_index, component);
+                    packed_data(
+                        point_index,
+                        packed_perpendicular_diffusion_advection_offset +
+                            component) =
+                        perpendicular_diffusion_advection(point_index,
+                                                           component);
+                }
+                packed_data(point_index,
+                            packed_magnetic_field_magnitude_component) =
+                    magnetic_field_magnitude(point_index, 0);
+                packed_data(point_index, packed_kappa_parallel_component) =
+                    kappa_parallel(point_index, 0);
+                packed_data(point_index, packed_kappa_perpendicular_component) =
+                    kappa_perpendicular(point_index, 0);
+                packed_data(point_index,
+                            packed_solar_wind_divergence_component) =
+                    solar_wind_divergence(point_index, 0);
+                packed_data(point_index, packed_magnetic_focusing_component) =
+                    magnetic_focusing(point_index, 0);
+                packed_data(point_index, packed_bb_grad_solar_wind_component) =
+                    bb_grad_solar_wind(point_index, 0);
+                packed_data(point_index,
+                            packed_convective_derivative_component) =
+                    convective_derivative(point_index, 0);
+                packed_data(point_index, packed_scattering_sigma2_component) =
+                    scattering_sigma2(point_index, 0);
+                packed_data(
+                    point_index,
+                    packed_scattering_correlation_length_component) =
+                    scattering_correlation_length(point_index, 0);
+            });
+        Kokkos::fence(
+            "FocusTransportSolver::build_packed_coefficient_basis");
+        return packed;
     }
 
     /**
@@ -690,6 +899,154 @@ private:
     }
 
     /**
+     * Assemble focused transport terms from one interpolated packed basis sample.
+     */
+    KOKKOS_INLINE_FUNCTION
+    debug_terms_type evaluate_terms_from_packed(
+        coordinate_array_type position,
+        const double input_momentum,
+        const double input_mu,
+        const packed_value_array_type& packed_values) const {
+        debug_terms_type terms;
+        terms.position = position;
+        terms.momentum_magnitude = absolute_value(input_momentum);
+        terms.mu = reflected_pitch_angle_cosine(input_mu);
+        terms.gamma = this->particles.properties.gamma_from_momentum_magnitude(
+            terms.momentum_magnitude);
+        terms.speed = this->particles.properties.speed_from_momentum_magnitude(
+            terms.momentum_magnitude);
+
+        const vector_array_type magnetic_field =
+            packed_vector(packed_values, packed_magnetic_field_offset);
+        const vector_array_type magnetic_direction =
+            packed_vector(packed_values, packed_magnetic_direction_offset);
+        const vector_array_type solar_wind =
+            packed_vector(packed_values, packed_solar_wind_offset);
+        const vector_array_type gradient_drift_basis =
+            packed_vector(packed_values, packed_gradient_drift_basis_offset);
+        const vector_array_type curvature_drift_basis =
+            packed_vector(packed_values, packed_curvature_drift_basis_offset);
+        const vector_array_type perpendicular_diffusion_advection_gamma_one =
+            packed_vector(packed_values,
+                          packed_perpendicular_diffusion_advection_offset);
+
+        terms.magnetic_field_magnitude =
+            packed_values[packed_magnetic_field_magnitude_component];
+        if (!finite_positive(terms.magnetic_field_magnitude)) {
+            Kokkos::abort(
+                "FocusTransportSolver: focused transport requires |B| > 0.");
+        }
+        double sampled_direction_magnitude_squared = 0.0;
+        for (int component = 0; component < VecDim; ++component) {
+            terms.magnetic_field[component] = magnetic_field[component];
+            sampled_direction_magnitude_squared +=
+                magnetic_direction[component] * magnetic_direction[component];
+            terms.solar_wind_velocity[component] = solar_wind[component];
+        }
+        const double sampled_direction_magnitude =
+            Kokkos::sqrt(sampled_direction_magnitude_squared);
+        if (!finite_positive(sampled_direction_magnitude)) {
+            Kokkos::abort(
+                "FocusTransportSolver: interpolated magnetic direction is invalid.");
+        }
+        const double inverse_sampled_direction_magnitude =
+            1.0 / sampled_direction_magnitude;
+        for (int component = 0; component < VecDim; ++component) {
+            terms.magnetic_direction[component] =
+                magnetic_direction[component] *
+                inverse_sampled_direction_magnitude;
+        }
+
+        const double kappa_parallel_gamma_one =
+            packed_values[packed_kappa_parallel_component];
+        const double kappa_perpendicular_gamma_one =
+            packed_values[packed_kappa_perpendicular_component];
+        const double perpendicular_gamma_factor =
+            LegencyModel::perpendicular_gamma_factor(
+                terms.gamma, coefficients.perpendicular_model);
+        terms.kappa_parallel =
+            kappa_parallel_gamma_one * Kokkos::pow(terms.gamma, 1.0 / 3.0);
+        terms.kappa_perpendicular =
+            kappa_perpendicular_gamma_one * perpendicular_gamma_factor;
+        if (!finite_nonnegative(terms.kappa_parallel) ||
+            !finite_nonnegative(terms.kappa_perpendicular)) {
+            Kokkos::abort(
+                "FocusTransportSolver: diffusion coefficients must be finite and non-negative.");
+        }
+
+        const double charge = this->particles.properties.charge;
+        if (charge == 0.0) {
+            Kokkos::abort(
+                "FocusTransportSolver: focused drift requires nonzero charge.");
+        }
+        const double mu2 = terms.mu * terms.mu;
+        const double gradient_drift_factor = 0.5 * (1.0 - mu2);
+        const double curvature_drift_factor = mu2;
+        const double drift_prefactor =
+            terms.momentum_magnitude * terms.speed *
+            this->particles.properties.speed_of_light / charge;
+
+        for (int component = 0; component < VecDim; ++component) {
+            terms.streaming_velocity[component] =
+                terms.speed * terms.mu * terms.magnetic_direction[component];
+            terms.drift_velocity[component] =
+                drift_prefactor *
+                (gradient_drift_factor * gradient_drift_basis[component] +
+                 curvature_drift_factor * curvature_drift_basis[component]);
+            terms.diffusion_advection[component] =
+                perpendicular_gamma_factor *
+                perpendicular_diffusion_advection_gamma_one[component];
+            terms.total_advection[component] =
+                terms.streaming_velocity[component] +
+                terms.solar_wind_velocity[component] +
+                terms.drift_velocity[component] +
+                terms.diffusion_advection[component];
+        }
+        for (int dim = 0; dim < space_dim; ++dim) {
+            terms.coordinate_rate[dim] = coordinate_rate_component(
+                position, dim, terms.total_advection[dim]);
+            const double b_i = terms.magnetic_direction[dim];
+            const double projection = 1.0 - b_i * b_i;
+            terms.kappa_perpendicular_effective[dim] =
+                projection > 0.0 ? terms.kappa_perpendicular * projection : 0.0;
+        }
+
+        terms.solar_wind_divergence =
+            packed_values[packed_solar_wind_divergence_component];
+        terms.bb_grad_solar_wind =
+            packed_values[packed_bb_grad_solar_wind_component];
+        terms.b_dot_solar_wind_total_derivative =
+            packed_values[packed_convective_derivative_component];
+        terms.magnetic_focusing =
+            packed_values[packed_magnetic_focusing_component];
+        terms.scattering_sigma2 =
+            packed_values[packed_scattering_sigma2_component];
+        terms.scattering_correlation_length =
+            packed_values[packed_scattering_correlation_length_component];
+
+        const double one_minus_mu2 = 1.0 - mu2;
+        double acceleration_term = 0.0;
+        if (terms.speed > 0.0) {
+            acceleration_term =
+                terms.mu * terms.b_dot_solar_wind_total_derivative /
+                terms.speed;
+        }
+        const double momentum_factor =
+            0.5 * one_minus_mu2 *
+                (terms.solar_wind_divergence - terms.bb_grad_solar_wind) +
+            mu2 * terms.bb_grad_solar_wind + acceleration_term;
+        terms.momentum_rate = -terms.momentum_magnitude * momentum_factor;
+
+        const PitchAngleEvaluation pitch =
+            evaluate_pitch_angle_at_mu(terms, terms.mu);
+        terms.focusing_mu_rate = pitch.focusing_mu_rate;
+        terms.D_mumu = pitch.D_mumu;
+        terms.dD_mumu_dmu = pitch.dD_mumu_dmu;
+        terms.mu_rate = pitch.mu_rate;
+        return terms;
+    }
+
+    /**
      * Evaluate all terms for one particle index.
      */
     template <
@@ -750,6 +1107,34 @@ private:
             bb_grad_solar_wind_interpolator, convective_derivative_interpolator,
             scattering_sigma_interpolator,
             scattering_correlation_length_interpolator);
+        terms.particle_id = this->particles.particle_id(particle_index);
+        if constexpr (ComputeTimeStep) {
+            terms.stable_time_step = local_stable_time_step(terms);
+        }
+        return terms;
+    }
+
+    /**
+     * Evaluate all terms for one particle index through the packed coefficient path.
+     */
+    template <bool ComputeTimeStep, typename PackedInterpolator>
+    KOKKOS_INLINE_FUNCTION
+    debug_terms_type evaluate_particle_terms_from_packed(
+        const size_type particle_index,
+        const PackedInterpolator& packed_interpolator) const {
+        coordinate_array_type position{};
+        for (int dim = 0; dim < space_dim; ++dim) {
+            position[dim] = this->particles.position(particle_index, dim);
+        }
+        if (!prepare_physical_position(position)) {
+            return debug_terms_type{};
+        }
+
+        const packed_value_array_type packed_values =
+            packed_interpolator.sample(position);
+        debug_terms_type terms = evaluate_terms_from_packed(
+            position, this->particles.momentum(particle_index),
+            this->particles.mu(particle_index), packed_values);
         terms.particle_id = this->particles.particle_id(particle_index);
         if constexpr (ComputeTimeStep) {
             terms.stable_time_step = local_stable_time_step(terms);
@@ -1005,6 +1390,49 @@ private:
     }
 
     /**
+     * Compute the adaptive time step using the packed spatial-basis field.
+     */
+    double compute_adaptive_time_step_packed_impl() const {
+        const auto packed_interpolator =
+            FieldInterpolator::make_linear_position_interpolator(
+                packed_coefficient_basis, interpolation_domain(),
+                interpolation_policy());
+        return compute_adaptive_time_step_with_packed_interpolator(
+            packed_interpolator);
+    }
+
+    /**
+     * Compute the adaptive time step from a packed-basis interpolator.
+     */
+    template <typename PackedInterpolator>
+    double compute_adaptive_time_step_with_packed_interpolator(
+        const PackedInterpolator& packed_interpolator) const {
+        const FocusTransportSolver local_solver = *this;
+        double minimum_dt = large_time_step;
+        Kokkos::parallel_reduce(
+            "FocusTransportSolver::compute_adaptive_time_step_packed",
+            Kokkos::RangePolicy<execution_space>(0, this->particles.particle_count()),
+            KOKKOS_LAMBDA(const size_type particle_index, double& update) {
+                if (!particle_status_is_alive(
+                        local_solver.particles.status(particle_index))) {
+                    return;
+                }
+                const debug_terms_type terms =
+                    local_solver.template evaluate_particle_terms_from_packed<
+                        true>(particle_index, packed_interpolator);
+                update = min_time_step(update, terms.stable_time_step);
+            },
+            Kokkos::Min<double>(minimum_dt));
+        Kokkos::fence(
+            "FocusTransportSolver::compute_adaptive_time_step_packed");
+
+        if (!std::isfinite(minimum_dt) || minimum_dt >= 0.5 * large_time_step) {
+            return 0.0;
+        }
+        return this->courant_number() * minimum_dt;
+    }
+
+    /**
      * Advance particles without stochastic increments.
      */
     void advance_deterministic_impl(const double step_dt) {
@@ -1111,6 +1539,104 @@ private:
     }
 
     /**
+     * Advance deterministic particles through the packed spatial-basis field.
+     */
+    void advance_deterministic_packed_impl(const double step_dt) {
+        advance_with_random_packed_impl(step_dt, nullptr);
+    }
+
+    /**
+     * Advance stochastic particles through the packed spatial-basis field.
+     */
+    void advance_stochastic_packed_impl(
+        const double step_dt,
+        const random_manager_type& random_manager) {
+        advance_with_random_packed_impl(step_dt, &random_manager);
+    }
+
+    /**
+     * Shared packed-basis update path for deterministic/stochastic updates.
+     */
+    void advance_with_random_packed_impl(
+        const double step_dt,
+        const random_manager_type* random_manager) {
+        const auto packed_interpolator =
+            FieldInterpolator::make_linear_position_interpolator(
+                packed_coefficient_basis, interpolation_domain(),
+                interpolation_policy());
+        if (random_manager == nullptr) {
+            advance_with_packed_interpolator<false>(
+                step_dt, random_manager_type{1}, packed_interpolator);
+        } else {
+            advance_with_packed_interpolator<true>(
+                step_dt, *random_manager, packed_interpolator);
+        }
+    }
+
+    /**
+     * Advance particles from a packed-basis interpolator.
+     */
+    template <bool UseRandom, typename PackedInterpolator>
+    void advance_with_packed_interpolator(
+        const double step_dt,
+        const random_manager_type& random_manager,
+        const PackedInterpolator& packed_interpolator) {
+        const FocusTransportSolver local_solver = *this;
+        const random_manager_type local_random_manager = random_manager;
+        auto positions = this->particles.position;
+        auto momenta = this->particles.momentum;
+        auto mus = this->particles.mu;
+        auto statuses = this->particles.status;
+        Kokkos::parallel_for(
+            UseRandom ? "FocusTransportSolver::advance_stochastic_packed"
+                      : "FocusTransportSolver::advance_deterministic_packed",
+            Kokkos::RangePolicy<execution_space>(0, this->particles.particle_count()),
+            KOKKOS_LAMBDA(const size_type particle_index) {
+                if (!particle_status_is_alive(statuses(particle_index))) {
+                    return;
+                }
+                const debug_terms_type terms =
+                    local_solver.template evaluate_particle_terms_from_packed<
+                        false>(particle_index, packed_interpolator);
+
+                vector_array_type physical_random_increment{};
+                double pitch_angle_normal = 0.0;
+                (void)local_random_manager;
+                (void)step_dt;
+                if constexpr (UseRandom) {
+                    auto generator = local_random_manager.get_state();
+                    physical_random_increment =
+                        sample_perpendicular_diffusion_increment(
+                            terms, step_dt, generator);
+                    pitch_angle_normal =
+                        stochastic_sampler_type::normal(generator);
+                    local_random_manager.free_state(generator);
+                }
+
+                for (int dim = 0; dim < space_dim; ++dim) {
+                    const double deterministic_increment =
+                        step_dt * terms.coordinate_rate[dim];
+                    const double stochastic_increment =
+                        local_solver.coordinate_rate_component(
+                            terms.position, dim,
+                            physical_random_increment[dim]);
+                    positions(particle_index, dim) +=
+                        deterministic_increment + stochastic_increment;
+                }
+
+                const double updated_momentum =
+                    terms.momentum_magnitude + step_dt * terms.momentum_rate;
+                momenta(particle_index) =
+                    updated_momentum > 0.0 ? updated_momentum : 0.0;
+                mus(particle_index) = local_solver.picard_pitch_angle_update(
+                    terms, step_dt, pitch_angle_normal);
+            });
+        Kokkos::fence(
+            UseRandom ? "FocusTransportSolver::advance_stochastic_packed"
+                      : "FocusTransportSolver::advance_deterministic_packed");
+    }
+
+    /**
      * Advance particles from fully constructed interpolators.
      */
     template <
@@ -1184,6 +1710,8 @@ private:
 
                 vector_array_type physical_random_increment{};
                 double pitch_angle_normal = 0.0;
+                (void)local_random_manager;
+                (void)step_dt;
                 if constexpr (UseRandom) {
                     auto generator = local_random_manager.get_state();
                     physical_random_increment =
@@ -1224,6 +1752,9 @@ private:
         if (particle_index >= this->particles.particle_count()) {
             throw std::runtime_error(
                 "FocusTransportSolver: debug particle index is out of range.");
+        }
+        if (use_packed_coefficient_basis) {
+            return debug_terms_for_particle_packed_impl(particle_index);
         }
         return debug_terms_for_particle_impl(particle_index);
     }
@@ -1316,6 +1847,32 @@ private:
                         scattering_correlation_length_interpolator);
             });
         Kokkos::fence("FocusTransportSolver::debug_terms_for_particle");
+        const auto terms_host =
+            Kokkos::create_mirror_view_and_copy(Kokkos::HostSpace{}, terms_view);
+        return terms_host(0);
+    }
+
+    /**
+     * Evaluate debug terms for one particle through the packed coefficient path.
+     */
+    debug_terms_type debug_terms_for_particle_packed_impl(
+        const size_type particle_index) const {
+        const auto packed_interpolator =
+            FieldInterpolator::make_linear_position_interpolator(
+                packed_coefficient_basis, interpolation_domain(),
+                interpolation_policy());
+        debug_terms_view_type terms_view("focus_debug_terms", 1);
+        const FocusTransportSolver local_solver = *this;
+        Kokkos::parallel_for(
+            "FocusTransportSolver::debug_terms_for_particle_packed",
+            Kokkos::RangePolicy<execution_space>(0, 1),
+            KOKKOS_LAMBDA(const int) {
+                terms_view(0) =
+                    local_solver.template evaluate_particle_terms_from_packed<
+                        true>(particle_index, packed_interpolator);
+            });
+        Kokkos::fence(
+            "FocusTransportSolver::debug_terms_for_particle_packed");
         const auto terms_host =
             Kokkos::create_mirror_view_and_copy(Kokkos::HostSpace{}, terms_view);
         return terms_host(0);
